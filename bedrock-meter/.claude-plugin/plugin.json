@@ -1,6 +1,6 @@
 {
   "name": "bedrock-meter",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Token and USD meter for pay-per-token Amazon Bedrock sessions: per-model input/output/cache counts priced at Bedrock rates",
   "author": {
     "name": "weidu-tpvision",

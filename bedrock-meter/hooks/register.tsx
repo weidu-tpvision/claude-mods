@@ -270,7 +270,7 @@ export const register: Register = (on, options) => {
     const r = await next(e)
     if ('usage' in r && r.usage) await record($, lastModel || (await $.session.model()), r.usage, settings)
     return r
-  })
+  }).catch(($, e, next) => next(e)) // a failed count never holds up the compaction: replays it, or runs it
 
   on('session.measure', async ($, e, next) => {
     const r = await next(e)

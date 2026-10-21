@@ -59,12 +59,15 @@ const SUMMARY = { role: 'user' as const, text: 'summary', toolUses: [] }
 const NOW = at(12)
 const CONTEXT = { tokens: 84_000, window: 200_000, percent: 42 }
 
-function engine(on: On, transcript: string | undefined, store: Record<string, unknown> = {}) {
+function engine(on: On, transcript: string | undefined, store: Record<string, unknown> = {}, isStoreBroken = () => false) {
   mock.clock(on, { now: NOW })
   // The plugin's store, kept here so a test can read what is left in it.
   const kept = new Map(Object.entries(store))
   on('store.get', (_, e) => ({ value: kept.get(e.key) }))
-  on('store.set', (_, e) => (kept.set(e.key, e.value), { value: undefined }))
+  on('store.set', (_, e) => {
+    if (isStoreBroken()) throw new Error('disk full')
+    return (kept.set(e.key, e.value), { value: undefined })
+  })
   on('store.delete', (_, e) => (kept.delete(e.key), { value: undefined }))
   on('store.keys', () => ({ value: [...kept.keys()] }))
   on('ui.status', () => ({ value: undefined }))
@@ -245,4 +248,13 @@ test('a compaction before any request this load is priced at the session\'s mode
   await $.session.compact({ trigger: 'manual', messages: [SUMMARY] })
   // The $5.50 estimate and one Opus 5.5 request.
   expect(await sessionLine(() => $.ui.mount({ ...PANE, surface: 'terminal' }))).toMatch(dollars(5.5 + opusRegional()))
+})
+
+test('a compaction goes through even when counting it fails', async ($, on) => {
+  let isBroken = false
+  engine(on, undefined, {}, () => isBroken)
+  await $.session.start({ cwd: '/w', surface: 'terminal', isInteractive: true })
+  isBroken = true
+  const r = await $.session.compact({ trigger: 'manual', messages: [SUMMARY] })
+  expect(r.messages?.length).toBe(1)
 })
