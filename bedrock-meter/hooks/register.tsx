@@ -249,8 +249,9 @@ export const register: Register = (on, options) => {
     const opened = await $.ui.open({ id: PANE, title: 'Bedrock meter' })
     const total = sum(Object.values((await read($, meter)).byModel))
     const line =
-      `${usd(total.usd)} this session over ${total.requests} requests ` +
-      `(cache hit ${hitRate(total)}%).`
+      total.requests > 0
+        ? `${usd(total.usd)} this session over ${total.requests} requests (cache hit ${hitRate(total)}%).`
+        : `${usd(total.usd)} this session (Claude Code's estimate of the requests before the meter loaded).`
     return { text: opened.isPlaced ? line : `${line} Widen the terminal to see the pane.` }
   })
 

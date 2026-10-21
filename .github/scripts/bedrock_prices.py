@@ -157,10 +157,15 @@ def main(argv):
         print('Bedrock prices unchanged.')
         return
     OUT.write_text(new)
+    # pricing.ts bills `*Long` rates only past a threshold it lists per family.
+    pricing = (OUT.parent / 'pricing.ts').read_text()
+    unlisted = [f for f, ts in rows.items() if any(t.endswith('Long') for t in ts) and f"'{f}':" not in pricing]
     version = bump(MANIFEST) if old else None
     print(f"AWS price list published {offer.get('publicationDate', 'unknown')}" + (f'; bedrock-meter bumped to {version}.' if version else '.'))
     print()
     print('\n'.join(changes(old, new)))
+    for f in unlisted:
+        print(f'\n**Check:** `{f}` now has long-context rates; add its threshold to `LONG_PROMPT` in `bedrock-meter/hooks/pricing.ts` or they are never applied.')
 
 
 if __name__ == '__main__':

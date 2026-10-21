@@ -1,6 +1,6 @@
 # claude-mods
 
-Mods for [Claude Code](https://claude.com/claude-code) (2.1.287 or later): hooks modules that add to Claude Code's own interface.
+Mods for [Claude Code](https://claude.com/claude-code) (tested with 2.1.306): hooks modules that add to Claude Code's own interface.
 
 | Mod | What it does |
 | --- | --- |
