@@ -1,0 +1,33 @@
+{
+  "name": "bedrock-meter",
+  "version": "0.1.0",
+  "description": "Token and USD meter for pay-per-token Amazon Bedrock sessions: per-model input/output/cache counts priced at Bedrock rates",
+  "author": {
+    "name": "weidu-tpvision",
+    "url": "https://github.com/weidu-tpvision"
+  },
+  "license": "MIT",
+  "repository": "https://github.com/weidu-tpvision/claude-mods",
+  "homepage": "https://github.com/weidu-tpvision/claude-mods/tree/main/bedrock-meter",
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "regionalPremiumPct": {
+      "type": "number",
+      "title": "Regional premium (%)",
+      "description": "Surcharge Bedrock adds over global pricing for regional and geo (us., eu., apac.) inference profiles. Model ids starting with global. are priced without it. Set 0 to turn it off.",
+      "default": 10
+    },
+    "budgetUsd": {
+      "type": "number",
+      "title": "Session budget (USD)",
+      "description": "Toast once when the session's estimated cost passes this amount. 0 turns it off.",
+      "default": 0
+    },
+    "openPane": {
+      "type": "boolean",
+      "title": "Open pane at start",
+      "description": "Open the breakdown pane when a session starts (it waits for a wide enough terminal). /bedrock-cost opens it anytime.",
+      "default": false
+    }
+  }
+}

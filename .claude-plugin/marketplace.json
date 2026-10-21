@@ -1,0 +1,14 @@
+{
+  "name": "weidu-claude-mods",
+  "description": "Claude Code mods by weidu-tpvision.",
+  "owner": { "name": "weidu-tpvision", "url": "https://github.com/weidu-tpvision" },
+  "plugins": [
+    {
+      "name": "bedrock-meter",
+      "description": "Token and USD meter for pay-per-token Amazon Bedrock sessions: a band above the prompt with cost, context, cache and today's total, and a per-model pane.",
+      "source": "./bedrock-meter",
+      "category": "monitoring",
+      "tags": ["band", "pane", "command", "bedrock", "cost"]
+    }
+  ]
+}
