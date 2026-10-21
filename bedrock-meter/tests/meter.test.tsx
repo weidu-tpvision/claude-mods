@@ -40,19 +40,23 @@ const dollars = (n: number) => new RegExp(`\\$${n.toFixed(2).replace('.', '\\.')
 const SID = 's1'
 const DIR = '/h/.claude/projects/-w'
 
+// Times on 21 October 2026 in the machine's own time zone, so the dates the
+// mod derives come out the same wherever the tests run.
+const at = (hour: number, minute = 0) => new Date(2026, 9, 21, hour, minute).getTime()
+
 // Two lines of one message (a line per content block), then a second message.
 const TRANSCRIPT = [
-  { type: 'assistant', timestamp: '2026-10-21T10:00:00Z', message: { id: 'm1', model: 'claude-opus-5-5', usage: USAGE } },
-  { type: 'assistant', timestamp: '2026-10-21T10:00:00Z', message: { id: 'm1', model: 'claude-opus-5-5', usage: USAGE } },
+  { type: 'assistant', timestamp: new Date(at(10)).toISOString(), message: { id: 'm1', model: 'claude-opus-5-5', usage: USAGE } },
+  { type: 'assistant', timestamp: new Date(at(10)).toISOString(), message: { id: 'm1', model: 'claude-opus-5-5', usage: USAGE } },
   { type: 'user', message: { content: 'hi' } },
-  { type: 'assistant', timestamp: '2026-10-21T10:01:00Z', message: { id: 'm2', model: 'claude-opus-5-5', usage: USAGE } },
+  { type: 'assistant', timestamp: new Date(at(10, 1)).toISOString(), message: { id: 'm2', model: 'claude-opus-5-5', usage: USAGE } },
 ]
   .map(row => JSON.stringify(row))
   .join('\n')
 
 // The engine beneath the plugin: a Bedrock session whose transcript is on disk.
 const SUMMARY = { role: 'user' as const, text: 'summary', toolUses: [] }
-const NOW = Date.parse('2026-10-21T12:00:00Z')
+const NOW = at(12)
 const CONTEXT = { tokens: 84_000, window: 200_000, percent: 42 }
 
 function engine(on: On, transcript: string | undefined, store: Record<string, unknown> = {}) {
