@@ -1,0 +1,48 @@
+# Once a week, regenerate bedrock-meter's price table from AWS's public price
+# list. When a price moved, open (or refresh) a pull request with the table
+# and a patch-version bump: merging it ships the new prices.
+name: Bedrock prices
+
+on:
+  schedule:
+    - cron: '17 6 * * 1' # Mondays, 06:17 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency: bedrock-prices
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Regenerate the price table
+        run: python3 .github/scripts/bedrock_prices.py | tee "$RUNNER_TEMP/changes.md"
+
+      - name: Open or refresh the pull request
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BRANCH: bot/bedrock-prices
+        run: |
+          if git diff --quiet; then
+            echo 'Prices unchanged: nothing to propose.'
+            exit 0
+          fi
+          {
+            echo
+            echo 'Merge to ship the new prices: users get them with `claude plugin update bedrock-meter`, then `/reload-plugins`.'
+          } >> "$RUNNER_TEMP/changes.md"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git switch -C "$BRANCH"
+          git commit -am 'bedrock-meter: update prices from the AWS price list'
+          git push --force origin "$BRANCH"
+          if [ "$(gh pr view "$BRANCH" --json state -q .state 2>/dev/null)" = OPEN ]; then
+            gh pr edit "$BRANCH" --body-file "$RUNNER_TEMP/changes.md"
+          else
+            gh pr create --head "$BRANCH" --title 'bedrock-meter: Bedrock prices changed' --body-file "$RUNNER_TEMP/changes.md"
+          fi

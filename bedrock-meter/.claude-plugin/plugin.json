@@ -1,6 +1,6 @@
 {
   "name": "bedrock-meter",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Token and USD meter for pay-per-token Amazon Bedrock sessions: per-model input/output/cache counts priced at Bedrock rates",
   "author": {
     "name": "weidu-tpvision",
@@ -14,7 +14,7 @@
     "regionalPremiumPct": {
       "type": "number",
       "title": "Regional premium (%)",
-      "description": "Surcharge Bedrock adds over global pricing for regional and geo (us., eu., apac.) inference profiles. Model ids starting with global. are priced without it. Set 0 to turn it off.",
+      "description": "Fallback surcharge for a regional or geo (us., eu., apac.) request on a model the price table lists with global prices only. Models AWS lists both ways are priced at AWS's own regional rates, so this rarely applies. Set 0 to turn it off.",
       "default": 10
     },
     "budgetUsd": {

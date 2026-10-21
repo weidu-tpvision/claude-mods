@@ -4,7 +4,8 @@ import type { EngineInterface, Register, Timer } from 'claude-code'
 import type { Context, Meter, Tally } from '../types'
 import { drawBand, hitRate, tokens, usd } from './band'
 import { bandsFile, parseOrder, stackBands } from './bands'
-import { costOf, premiumFor } from './pricing'
+import { PUBLISHED } from './prices'
+import { costOf, scopeFor } from './pricing'
 import type { Usage } from './pricing'
 
 const PANE = 'bedrock-meter'
@@ -78,7 +79,7 @@ async function prune($: EngineInterface) {
 type Settings = { premiumPct: number; budgetUsd: number }
 
 async function record($: EngineInterface, model: string, u: Usage, settings: Settings) {
-  const cost = costOf(model, u, premiumFor(model, await $.session.model(), settings.premiumPct))
+  const cost = costOf(model, u, scopeFor(model, await $.session.model()), settings.premiumPct)
   await update($, meter, m => ({
     ...m,
     byModel: { ...m.byModel, [rowOf(model)]: add(m.byModel[rowOf(model)] ?? ZERO, u, cost) },
@@ -177,16 +178,17 @@ async function backfill($: EngineInterface, settings: Settings) {
   const days: Record<string, Tally> = {}
   if (isRead) {
     for (const turn of turns.values()) {
-      const cost = costOf(turn.model, turn.usage, premiumFor(turn.model, sessionModel, settings.premiumPct))
+      const cost = costOf(turn.model, turn.usage, scopeFor(turn.model, sessionModel), settings.premiumPct)
       const date = dateOf(Number.isFinite(turn.at) ? turn.at : now)
       byModel[rowOf(turn.model)] = add(byModel[rowOf(turn.model)] ?? ZERO, turn.usage, cost)
       days[date] = add(days[date] ?? ZERO, turn.usage, cost)
     }
   } else {
-    // Claude Code prices at the global rates: the premium is added on top.
+    // Claude Code prices at the global rates: a regional session adds the premium.
     const engine = (await $.session.usage()).cost?.usd ?? 0
     if (engine > 0) {
-      const tally = { ...ZERO, usd: engine * (1 + premiumFor(sessionModel, sessionModel, settings.premiumPct) / 100) }
+      const premium = scopeFor(sessionModel, sessionModel) === 'regional' ? settings.premiumPct : 0
+      const tally = { ...ZERO, usd: engine * (1 + premium / 100) }
       byModel[EARLIER] = tally
       days[dateOf(now)] = tally
     }
@@ -341,7 +343,7 @@ export const register: Register = (on, options) => {
             )}
             {engine !== undefined && <Text dimColor>Claude Code /cost (global rates) {usd(engine)}</Text>}
             <Text dimColor>
-              Regional premium {settings.premiumPct}% (global. ids exempt)
+              Prices: AWS list of {PUBLISHED.slice(0, 10)}
               {settings.budgetUsd > 0 ? ` · budget ${usd(settings.budgetUsd)}` : ''}
             </Text>
           </Box>
