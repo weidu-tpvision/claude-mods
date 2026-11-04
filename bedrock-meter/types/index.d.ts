@@ -27,12 +27,12 @@ export type HistDay = {
   sessions: Record<string, { usd: number; project?: string }>
 }
 
-export type HistoryTab = 'overview' | 'chart' | 'breakdown'
+export type HistoryTab = 'session' | 'overview' | 'chart' | 'breakdown'
 export type ChartStep = 'day' | 'week' | 'month'
 export type BreakdownBy = 'model' | 'project' | 'session'
 export type Range = 'all' | 'month'
 
-// What the history pane shows.
+// What the pane shows: the session, or one view of the history.
 export type HistoryView = { tab: HistoryTab; chart: ChartStep; by: BreakdownBy; range: Range }
 
 // The scan of old transcripts that seeds the history.

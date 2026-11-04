@@ -1,14 +1,26 @@
 import type { Elements } from 'claude-code'
 
-import type { HistDay, HistoryView, Scan, Tally } from '../types'
-import { hitRate, usd } from './band'
+import type { Context, HistDay, HistoryView, Scan, Tally } from '../types'
+import { hitRate, tokens, usd } from './band'
 import type { Day } from './history'
 import { buckets, span, splitOf } from './history'
 import { monthFrom, parseDate, shiftDate, sum, weekOf } from './tally'
 
 type Ui = Pick<Elements['terminal'], 'Box' | 'Text' | 'Button'>
 
+// The live session, as the meter counts it.
+export type SessionFigures = {
+  byModel: Record<string, Tally>
+  today: Tally
+  month: Tally
+  context: Context | null
+  engineUsd?: number
+  published: string
+  budgetUsd: number
+}
+
 export type HistoryFigures = {
+  session: SessionFigures
   days: Day[]
   today: string
   now: number
@@ -51,6 +63,7 @@ function Tabs(ui: Ui, f: HistoryFigures) {
   )
   return (
     <Box flexDirection="row" gap={2} flexWrap="wrap">
+      {tab('session', 'c', 'Session')}
       {tab('overview', 'o', 'Overview')}
       {tab('chart', 'h', 'Histogram')}
       {tab('breakdown', 'b', 'Breakdown')}
@@ -67,6 +80,54 @@ function Choice<T extends string>(ui: Ui, current: T, pick: (v: T) => void, item
           {current === value ? <Text bold>{label}</Text> : <Text dimColor>{label}</Text>}
         </Button>
       ))}
+    </Box>
+  )
+}
+
+function Session(ui: Ui, f: HistoryFigures) {
+  const { Box, Text } = ui
+  const s = f.session
+  const total = sum(Object.values(s.byModel))
+  const rows = Object.entries(s.byModel).sort(([, a], [, b]) => b.usd - a.usd)
+  const ctx = s.context
+  return (
+    <Box flexDirection="column">
+      {rows.length === 0 && <Text dimColor>No Bedrock requests yet.</Text>}
+      {rows.map(([model, t]) => (
+        <Box flexDirection="column" key={model}>
+          <Text bold>{model}</Text>
+          <Text>
+            {'  '}
+            {usd(t.usd)}
+            {t.isPriced ? '' : ' (unpriced model)'}
+            {t.requests > 0 ? ` · ${t.requests} req` : ''}
+          </Text>
+          {t.requests > 0 && (
+            <Text dimColor>
+              {'  '}in {tokens(t.input)} · write {tokens(t.cacheWrite)} · read {tokens(t.cacheRead)} · out {tokens(t.output)}
+            </Text>
+          )}
+        </Box>
+      ))}
+      {rows.length > 0 && (
+        <Box flexDirection="column" marginTop={1}>
+          <Text bold>
+            Session {usd(total.usd)} · cache hit {hitRate(total)}%
+          </Text>
+          <Text>Today {usd(s.today.usd)} · out {tokens(s.today.output)}</Text>
+          <Text>Month {usd(s.month.usd)} · out {tokens(s.month.output)}</Text>
+          {ctx?.percent !== undefined && (
+            <Text>
+              Context {Math.round(ctx.percent)}%{ctx.tokens !== undefined ? ` · ${tokens(ctx.tokens)} of ${tokens(ctx.window)}` : ''}
+            </Text>
+          )}
+          {s.engineUsd !== undefined && <Text dimColor>Claude Code /cost (global rates) {usd(s.engineUsd)}</Text>}
+          <Text dimColor>
+            Prices: AWS list of {s.published}
+            {s.budgetUsd > 0 ? ` · budget ${usd(s.budgetUsd)}` : ''}
+          </Text>
+        </Box>
+      )}
     </Box>
   )
 }
@@ -296,10 +357,12 @@ function ScanLine(ui: Ui, f: HistoryFigures) {
   )
 }
 
-export function drawHistory(ui: Ui, f: HistoryFigures) {
+const VIEWS = { session: Session, overview: Overview, chart: Chart, breakdown: Breakdown }
+
+export function drawPane(ui: Ui, f: HistoryFigures) {
   const { Box, Text, Button } = ui
-  const body = f.view.tab === 'overview' ? Overview(ui, f) : f.view.tab === 'chart' ? Chart(ui, f) : Breakdown(ui, f)
-  const hasRange = f.view.tab !== 'chart'
+  const body = (VIEWS[f.view.tab] ?? Session)(ui, f)
+  const hasRange = f.view.tab === 'overview' || f.view.tab === 'breakdown'
   return (
     <Box flexDirection="column">
       {Tabs(ui, f)}
@@ -312,7 +375,7 @@ export function drawHistory(ui: Ui, f: HistoryFigures) {
             <Text dimColor>{f.view.range === 'all' ? 'All time' : 'This month'}</Text>
           </Button>
         )}
-        {ScanLine(ui, f)}
+        {(f.view.tab !== 'session' || f.scan.isRunning) && ScanLine(ui, f)}
       </Box>
     </Box>
   )

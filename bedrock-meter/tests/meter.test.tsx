@@ -71,6 +71,7 @@ type Extra = {
   isSeeded?: boolean
   writes?: Record<string, string>
   toasts?: string[]
+  opened?: unknown[]
 }
 
 function engine(
@@ -97,7 +98,7 @@ function engine(
   on('store.keys', () => ({ value: [...kept.keys()] }))
   on('ui.status', () => ({ value: undefined }))
   on('ui.toast', (_, e) => (extra.toasts?.push(e.text), { value: undefined }))
-  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('ui.open', (_, e) => (extra.opened?.push(e), { value: { isPlaced: true } }))
   on('fs.write', (_, e) => ((extra.writes ??= {})[e.path] = e.text, { value: undefined }))
   on('command.register', () => ({ value: { command: 'bedrock-cost' } }))
   on('session.start', (_, e) => ({ cwd: e.cwd }))
@@ -143,7 +144,7 @@ function engine(
 
 async function sessionLine(mount: () => Promise<{ find: (q: { type: 'Text'; text: RegExp }) => Promise<{ text?: string } | undefined>; unmount: () => Promise<void> }>) {
   const ui = await mount()
-  const text = (await ui.find({ type: 'Text', text: /^Session/ }))?.text
+  const text = (await ui.find({ type: 'Text', text: /^Session / }))?.text
   await ui.unmount()
   return text
 }
@@ -395,7 +396,7 @@ const HISTORY_PANE = (bodyColumns = 80) =>
   ({
     plugin: 'bedrock-meter',
     component: 'Pane',
-    requestId: 'bedrock-history',
+    requestId: 'bedrock-meter',
     surface: 'terminal',
     props: {
       title: 'Bedrock history',
@@ -462,8 +463,12 @@ test('the history pane: totals, a histogram and breakdowns, picked by its button
   engine(on, undefined, store, () => false, { startedAt: at(9) })
   await $.session.start({ cwd: '/w', surface: 'terminal', isInteractive: true })
 
+  // The pane opens on the session; the history is a tab of it.
+  expect(await texts($)).toMatch(/^Session \$5\.50/m)
   // Today: a's $3 and this session's $5.50 estimate.
-  const overview = await texts($)
+  const overview = await texts($, async ui => {
+    await ui.press({ key: 'tab-overview' })
+  })
   expect(overview).toMatch(/All time/)
   expect(overview).toMatch(/\$51\.50/) // 40 + 1 + 2 + 3 + 5.50
   expect(overview).toMatch(/since 2026-09-10/)
@@ -517,4 +522,18 @@ test('export writes a row per day and model, and per day and session', async ($,
   expect(writes['/h/out.csv']).toMatch(/^date,model,requests,/)
   expect(writes['/h/out.csv']).toContain('2026-10-20,claude-sonnet-4-5,1,0,0,0,0,2')
   expect(writes['/h/out-sessions.csv']).toContain('2026-10-20,b,/h/two,2')
+})
+
+test('/bedrock-cost opens the one pane on the session, history on the overview; Esc closes it', async ($, on) => {
+  const opened: unknown[] = []
+  engine(on, TRANSCRIPT, {}, () => false, { opened })
+  await $.session.start({ cwd: '/w', surface: 'terminal', isInteractive: true })
+  await $.command.run({ command: 'bedrock-cost', args: 'history' } as never)
+  expect(await texts($)).toMatch(/All time/)
+  await $.command.run({ command: 'bedrock-cost', args: '' } as never)
+  expect(await texts($)).toMatch(/^Session /m)
+  expect(opened).toEqual([
+    expect.objectContaining({ id: 'bedrock-meter', focus: true, closeOnEscape: true }),
+    expect.objectContaining({ id: 'bedrock-meter', focus: true, closeOnEscape: true }),
+  ])
 })

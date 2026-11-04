@@ -5,7 +5,7 @@ import type { Context, DayRecord, HistDay, HistoryView, Meter, Scan, Tally } fro
 import { drawBand, hitRate, tokens, usd } from './band'
 import { bandsFile, parseOrder, stackBands } from './bands'
 import { DAY_KEY, emptyHist, histKey, loadDays, mergeSession, toCsv } from './history'
-import { drawHistory } from './historyPane'
+import { drawPane } from './historyPane'
 import { PUBLISHED } from './prices'
 import { costOf, scopeFor } from './pricing'
 import type { Usage } from './pricing'
@@ -14,7 +14,8 @@ import { add, dateOf, sum, ZERO } from './tally'
 export { dateOf } from './tally'
 
 const PANE = 'bedrock-meter'
-const HISTORY = 'bedrock-history'
+// 0.4.0's separate history pane, now a tab of the one pane.
+const OLD_HISTORY = 'bedrock-history'
 const EMPTY: Meter = { byModel: {}, isWarned: false, isBackfilled: false }
 const EARLIER = 'earlier requests (Claude Code estimate)'
 
@@ -22,7 +23,7 @@ const meter = atom({ plugin: 'bedrock-meter', key: 'meter' } as const, EMPTY)
 const context = atom({ plugin: 'bedrock-meter', key: 'context' } as const, null as Context | null)
 const todayTally = atom({ plugin: 'bedrock-meter', key: 'today' } as const, ZERO)
 const monthTally = atom({ plugin: 'bedrock-meter', key: 'month' } as const, ZERO)
-const VIEW: HistoryView = { tab: 'overview', chart: 'week', by: 'model', range: 'all' }
+const VIEW: HistoryView = { tab: 'session', chart: 'week', by: 'model', range: 'all' }
 const view = atom({ plugin: 'bedrock-meter', key: 'view' } as const, VIEW)
 const scan = atom({ plugin: 'bedrock-meter', key: 'scan' } as const, { isRunning: false, done: 0, files: 0 } as Scan)
 
@@ -345,6 +346,8 @@ async function runScan($: EngineInterface, settings: Settings) {
   return scanning
 }
 
+const openPane = ($: EngineInterface) => $.ui.open({ id: PANE, title: 'Bedrock meter', focus: true, closeOnEscape: true })
+
 // The band order file, as hamzafer's claude-code-mods checklist saves it; [] on any error.
 async function readBandOrder($: EngineInterface): Promise<string[]> {
   const file = bandsFile(await $.env.get('CLAUDE_CONFIG_DIR'), await $.env.get('HOME'))
@@ -365,10 +368,10 @@ export const register: Register = (on, options) => {
     const r = await next(e)
     await $.command.register({
       name: 'bedrock-cost',
-      description: 'Bedrock cost: this session by model; `history` for totals, histograms and breakdowns',
+      description: 'Bedrock cost in a pane: this session by model, or `history` for totals, histograms and breakdowns',
       argumentHint: '[history | rescan | export [file]]',
     })
-    if (options.openPane === true) void $.ui.open({ id: PANE, title: 'Bedrock meter' })
+    void $.ui.close({ id: OLD_HISTORY }).catch(() => {})
     $.ui.status(undefined) // the band took over from the status line of the first version
     await rollUp($)
     await backfill($, settings)
@@ -401,8 +404,9 @@ export const register: Register = (on, options) => {
   on('command.run', { command: 'bedrock-cost' }, async ($, e) => {
     const [verb = '', ...rest] = e.args.trim().split(/\s+/)
     if (verb === 'history') {
-      const opened = await $.ui.open({ id: HISTORY, title: 'Bedrock history', focus: true })
-      const line = 'Bedrock history: o overview · h histogram (d/w/m) · b breakdown (e/p/s) · r range · Esc back to the prompt.'
+      await update($, view, v => ({ ...v, tab: 'overview' as const }))
+      const opened = await openPane($)
+      const line = 'Bedrock history: o overview · h histogram (d/w/m) · b breakdown (e/p/s) · c session · r range · Esc closes.'
       return { text: opened.isPlaced ? line : `${line} Widen the terminal to see the pane.` }
     }
     if (verb === 'rescan') {
@@ -420,7 +424,8 @@ export const register: Register = (on, options) => {
       return { text: `Wrote ${file} (per day and model) and ${sessionsFile} (per day and session).` }
     }
     if (verb !== '') return { text: `Unknown: /bedrock-cost ${verb}. Try /bedrock-cost, /bedrock-cost history, rescan or export [file].` }
-    const opened = await $.ui.open({ id: PANE, title: 'Bedrock meter' })
+    await update($, view, v => ({ ...v, tab: 'session' as const }))
+    const opened = await openPane($)
     const total = sum(Object.values((await read($, meter)).byModel))
     const line =
       total.requests > 0
@@ -476,65 +481,21 @@ export const register: Register = (on, options) => {
     return stackBands(rest, 'bedrock-meter', mine, 'above', await bandOrder)
   })
 
+  // One pane, its tabs the session and the history: opened by the command,
+  // closed by Esc, as /usage is.
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
-    const { Box, Text } = $.ui.resolve(e)
-    const m = await read($, meter)
-    const total = sum(Object.values(m.byModel))
-    const day = await read($, todayTally)
-    const month = await read($, monthTally)
-    const ctx = await read($, context)
-    const engine = (await $.session.usage()).cost?.usd
-    const rows = Object.entries(m.byModel).sort(([, a], [, b]) => b.usd - a.usd)
-
-    return (
-      <Box flexDirection="column">
-        {rows.length === 0 && <Text dimColor>No Bedrock requests yet.</Text>}
-        {rows.map(([model, t]) => (
-          <Box flexDirection="column" key={model}>
-            <Text bold>{model}</Text>
-            <Text>
-              {'  '}
-              {usd(t.usd)}
-              {t.isPriced ? '' : ' (unpriced model)'}
-              {t.requests > 0 ? ` · ${t.requests} req` : ''}
-            </Text>
-            {t.requests > 0 && (
-              <Text dimColor>
-                {'  '}in {tokens(t.input)} · write {tokens(t.cacheWrite)} · read {tokens(t.cacheRead)} · out{' '}
-                {tokens(t.output)}
-              </Text>
-            )}
-          </Box>
-        ))}
-        {rows.length > 0 && (
-          <Box flexDirection="column" marginTop={1}>
-            <Text bold>
-              Session {usd(total.usd)} · cache hit {hitRate(total)}%
-            </Text>
-            <Text>Today {usd(day.usd)} · out {tokens(day.output)}</Text>
-            <Text>Month {usd(month.usd)} · out {tokens(month.output)}</Text>
-            {ctx?.percent !== undefined && (
-              <Text>
-                Context {Math.round(ctx.percent)}%
-                {ctx.tokens !== undefined ? ` · ${tokens(ctx.tokens)} of ${tokens(ctx.window)}` : ''}
-              </Text>
-            )}
-            {engine !== undefined && <Text dimColor>Claude Code /cost (global rates) {usd(engine)}</Text>}
-            <Text dimColor>/bedrock-cost history: totals, histograms, by model and project</Text>
-            <Text dimColor>
-              Prices: AWS list of {PUBLISHED.slice(0, 10)}
-              {settings.budgetUsd > 0 ? ` · budget ${usd(settings.budgetUsd)}` : ''}
-            </Text>
-          </Box>
-        )}
-      </Box>
-    )
-  })
-
-  on('ui.render', { component: 'Pane', requestId: HISTORY }, async ($, e) => {
     const now = await $.clock.now()
-    await read($, monthTally) // a new request redraws the pane
-    return drawHistory($.ui.resolve(e), {
+    const m = await read($, meter)
+    return drawPane($.ui.resolve(e), {
+      session: {
+        byModel: m.byModel,
+        today: await read($, todayTally), // a new request redraws the pane
+        month: await read($, monthTally),
+        context: await read($, context),
+        engineUsd: (await $.session.usage()).cost?.usd,
+        published: PUBLISHED.slice(0, 10),
+        budgetUsd: settings.budgetUsd,
+      },
       days: await loadDays($),
       today: dateOf(now),
       now,

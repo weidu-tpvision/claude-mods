@@ -1,7 +1,7 @@
 {
   "name": "bedrock-meter",
-  "version": "0.4.0",
-  "description": "Token and USD meter for pay-per-token Amazon Bedrock sessions: a band above the prompt with cost, context, cache, and today's and this month's totals, priced at AWS's own on-demand rates; /bedrock-cost history for all-time totals, histograms and breakdowns",
+  "version": "0.4.1",
+  "description": "Token and USD meter for pay-per-token Amazon Bedrock sessions: a band above the prompt with cost, context, cache, and today's and this month's totals, priced at AWS's own on-demand rates; /bedrock-cost opens a pane with the session by model and the history: all-time totals, histograms and breakdowns",
   "author": {
     "name": "weidu-tpvision",
     "url": "https://github.com/weidu-tpvision"
@@ -28,12 +28,6 @@
       "title": "Monthly budget (USD)",
       "description": "Toast once a month when this calendar month's estimated total, every session's, passes this amount; the history pane shows the month against it. 0 turns it off.",
       "default": 0
-    },
-    "openPane": {
-      "type": "boolean",
-      "title": "Open pane at start",
-      "description": "Open the breakdown pane when a session starts (it waits for a wide enough terminal). /bedrock-cost opens it anytime.",
-      "default": false
     }
   }
 }
