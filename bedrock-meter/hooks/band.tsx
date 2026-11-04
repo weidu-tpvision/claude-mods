@@ -6,7 +6,8 @@ type Ui = Pick<Elements['terminal'], 'Box' | 'Text'>
 
 export const tokens = (n: number) =>
   n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${(n / 1e3).toFixed(1)}k` : `${n}`
-export const usd = (n: number) => (n >= 100 ? `$${n.toFixed(0)}` : n >= 1 ? `$${n.toFixed(2)}` : `$${n.toFixed(3)}`)
+export const usd = (n: number) =>
+  n === 0 ? '$0' : n >= 1000 ? `$${Math.round(n).toLocaleString('en-US')}` : n >= 100 ? `$${n.toFixed(0)}` : n >= 1 ? `$${n.toFixed(2)}` : `$${n.toFixed(3)}`
 
 // Share of the prompt the cache served: the figure that drives the bill most.
 export const hitRate = (t: Tally) => {

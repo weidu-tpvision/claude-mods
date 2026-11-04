@@ -61,7 +61,17 @@ const CONTEXT = { tokens: 84_000, window: 200_000, percent: 42 }
 
 // `size`: what fs.stat says of the transcript (over 4 MiB, it is streamed);
 // `startedAt`: the session's first launch, as session.usage reports it.
-type Extra = { size?: number; startedAt?: number; cats?: string[] }
+// `files`: other transcripts on disk, by path; `isSeeded: false` leaves the
+// old transcripts' scan to run; `writes`: what fs.write wrote, by path.
+type Extra = {
+  size?: number
+  startedAt?: number
+  cats?: string[]
+  files?: Record<string, string>
+  isSeeded?: boolean
+  writes?: Record<string, string>
+  toasts?: string[]
+}
 
 function engine(
   on: On,
@@ -72,7 +82,12 @@ function engine(
 ) {
   mock.clock(on, { now: NOW })
   // The plugin's store, kept here so a test can read what is left in it.
-  const kept = new Map(Object.entries(store))
+  const seeded = extra.isSeeded === false ? {} : { 'history:seeded': { at: 0, sessions: 0 } }
+  const kept = new Map(Object.entries({ ...seeded, ...store }))
+  const files = extra.files ?? {}
+  const own: Record<string, string> = transcript === undefined ? {} : { [`${DIR}/${SID}.jsonl`]: transcript }
+  const disk: Record<string, string> = { ...files, ...own }
+  const isDir = (path: string) => Object.keys(disk).some(f => f.startsWith(`${path}/`))
   on('store.get', (_, e) => ({ value: kept.get(e.key) }))
   on('store.set', (_, e) => {
     if (isStoreBroken()) throw new Error('disk full')
@@ -81,6 +96,9 @@ function engine(
   on('store.delete', (_, e) => (kept.delete(e.key), { value: undefined }))
   on('store.keys', () => ({ value: [...kept.keys()] }))
   on('ui.status', () => ({ value: undefined }))
+  on('ui.toast', (_, e) => (extra.toasts?.push(e.text), { value: undefined }))
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('fs.write', (_, e) => ((extra.writes ??= {})[e.path] = e.text, { value: undefined }))
   on('command.register', () => ({ value: { command: 'bedrock-cost' } }))
   on('session.start', (_, e) => ({ cwd: e.cwd }))
   on('session.id', () => ({ value: SID }))
@@ -91,13 +109,22 @@ function engine(
   on('session.compact', () => ({ messages: [SUMMARY], usage: USAGE }))
   on('ui.render', ($, e) => $.ui.resolve(e).Text({ children: 'engine band' }))
   on('env.get', (_, e) => ({ value: e.name === 'HOME' ? '/h' : undefined }))
-  on('fs.exists', (_, e) => ({ value: transcript !== undefined && e.path === `${DIR}/${SID}.jsonl` }))
-  on('fs.list', () => ({ value: [] }))
+  on('fs.exists', (_, e) => ({ value: e.path in disk || isDir(e.path) }))
+  // A folder's entries: its files, and the folders that lead to deeper ones.
+  on('fs.list', (_, e) => {
+    const names = new Map<string, 'file' | 'dir'>()
+    for (const f of Object.keys(disk)) {
+      if (!f.startsWith(`${e.path}/`)) continue
+      const [name, ...deeper] = f.slice(e.path.length + 1).split('/')
+      names.set(name!, deeper.length > 0 ? 'dir' : 'file')
+    }
+    return { value: [...names].map(([name, kind]) => ({ name, kind, size: kind === 'file' ? disk[`${e.path}/${name}`]!.length : 0, mtimeMs: 0, isLink: false })) }
+  })
   on('fs.read', (_, e) => {
     if ((extra.size ?? 0) > 4 * 1024 * 1024) throw new Error(`${e.path}: over 4 MiB`)
-    return { value: transcript ?? '' }
+    return { value: disk[e.path] ?? '' }
   })
-  on('fs.stat', () => ({ value: { kind: 'file' as const, size: extra.size ?? (transcript ?? '').length, mtimeMs: 0, isLink: false } }))
+  on('fs.stat', (_, e) => ({ value: { kind: 'file' as const, size: e.path === `${DIR}/${SID}.jsonl` ? (extra.size ?? (transcript ?? '').length) : (disk[e.path] ?? '').length, mtimeMs: 0, isLink: false } }))
   // cat hands the file over in pieces that end mid-line.
   on('process.spawn', async function* (_, e) {
     extra.cats?.push(e.argv.join(' '))
@@ -325,7 +352,7 @@ test('the cost turns yellow near the budget, with the budget beside it', { optio
   expect(await bandLine($, 200)).toContain(`of $${BUDGET.toFixed(2)}`)
 })
 
-test('daily totals past 31 days and the first version\'s keys are dropped', async ($, on) => {
+test('daily totals past 31 days roll up into the day\'s history; the first version\'s keys are dropped', async ($, on) => {
   const kept = engine(on, undefined, {
     'day:2026-08-01:old': TALLY,
     'day:2026-10-01:recent': TALLY,
@@ -333,7 +360,16 @@ test('daily totals past 31 days and the first version\'s keys are dropped', asyn
     'day:2026-10-21:other': TALLY,
   })
   await $.session.start({ cwd: '/w', surface: 'terminal', isInteractive: true })
-  expect([...kept.keys()].sort()).toEqual(['day:2026-10-01:recent', 'day:2026-10-21:other', `day:2026-10-21:${SID}`])
+  expect([...kept.keys()].filter(k => /^(day|hist):/.test(k)).sort()).toEqual([
+    'day:2026-10-01:recent',
+    'day:2026-10-21:other',
+    `day:2026-10-21:${SID}`,
+    'hist:2026-08-01',
+  ])
+  // The old session's day lives on in the day's history, once.
+  const hist = kept.get('hist:2026-08-01') as { total: typeof TALLY; sessions: Record<string, unknown> }
+  expect(hist.total.usd).toBe(1)
+  expect(Object.keys(hist.sessions)).toEqual(['old'])
   // Today: the other session's $1 and this one's $5.50 estimate.
   expect(await bandLine($, 200)).toMatch(/today \$6\.50/)
 })
@@ -353,4 +389,132 @@ test('a compaction goes through even when counting it fails', async ($, on) => {
   isBroken = true
   const r = await $.session.compact({ trigger: 'manual', messages: [SUMMARY] })
   expect(r.messages?.length).toBe(1)
+})
+
+const HISTORY_PANE = (bodyColumns = 80) =>
+  ({
+    plugin: 'bedrock-meter',
+    component: 'Pane',
+    requestId: 'bedrock-history',
+    surface: 'terminal',
+    props: {
+      title: 'Bedrock history',
+      isFocused: true,
+      bodyColumns,
+      placement: 'dock',
+      scroll: { offset: 0, bodyRows: 40 },
+      view: {},
+    },
+  }) as never
+
+const line = (id: string, at: number, model = 'claude-sonnet-4-5', cwd = '/home/me/proj') =>
+  JSON.stringify({ type: 'assistant', cwd, timestamp: new Date(at).toISOString(), message: { id, model, usage: USAGE } })
+
+// Another session's transcript: one request 50 days back (past the 31 kept per
+// session), one 2 days back, and one of a subagent's on that same day.
+const OTHER = `${DIR}/old1.jsonl`
+const OTHER_FILES = {
+  [OTHER]: [line('o1', new Date(2026, 8, 1, 10).getTime()), line('o2', new Date(2026, 9, 19, 10).getTime())].join('\n'),
+  [`${DIR}/old1/subagents/agent-a.jsonl`]: line('o3', new Date(2026, 9, 19, 11).getTime(), 'claude-haiku-4-5'),
+}
+const sonnetRegional = () => {
+  const p = ROWS.find(r => r.family === 'sonnet-4-5')!.regional!
+  return p.input + p.cacheWrite + p.cacheRead + p.output
+}
+
+test('old transcripts seed the history once: recent days per session, older ones rolled up', async ($, on) => {
+  const kept = engine(on, TRANSCRIPT, {}, () => false, { isSeeded: false, files: OTHER_FILES })
+  await $.session.start({ cwd: '/w', surface: 'terminal', isInteractive: true })
+  const r = await $.command.run({ command: 'bedrock-cost', args: 'rescan' } as never)
+  expect((r as { text?: string }).text).toMatch(/1 had Bedrock requests/)
+
+  const recent = kept.get('day:2026-10-19:old1') as { usd: number; project?: string; models: Record<string, unknown> }
+  expect(recent.project).toBe('/home/me/proj')
+  expect(Object.keys(recent.models).sort()).toEqual(['claude-haiku-4-5', 'claude-sonnet-4-5'])
+  const old = kept.get('hist:2026-09-01') as { total: { usd: number }; sessions: Record<string, { project?: string }> }
+  expect(cents(old.total.usd)).toBe(cents(sonnetRegional()))
+  expect(old.sessions.old1?.project).toBe('/home/me/proj')
+  // This session is the backfill's, never the scan's.
+  expect([...kept.keys()].some(k => k.startsWith('day:') && k.endsWith(':s1'))).toBe(true)
+  expect(kept.get('history:seeded')).toBeDefined()
+
+  // A second scan changes nothing: the old day's session is in it already.
+  await $.command.run({ command: 'bedrock-cost', args: 'rescan' } as never)
+  expect(cents((kept.get('hist:2026-09-01') as typeof old).total.usd)).toBe(cents(sonnetRegional()))
+})
+
+async function texts($: { ui: { mount: (t: never) => Promise<any> } }, act?: (ui: any) => Promise<void>) {
+  const ui = await $.ui.mount(HISTORY_PANE())
+  if (act) await act(ui)
+  const all: { text?: string }[] = await ui.findAll({ type: 'Text' })
+  await ui.unmount()
+  return all.map(t => t.text ?? '').join('\n')
+}
+
+test('the history pane: totals, a histogram and breakdowns, picked by its buttons', async ($, on) => {
+  const day = (usd: number, project: string, model = 'claude-opus-5-5') => ({ ...ONE, usd, project, models: { [model]: { ...ONE, usd } } })
+  const store = {
+    'day:2026-10-21:a': day(3, '/h/one'),
+    'day:2026-10-20:b': day(2, '/h/two', 'claude-sonnet-4-5'),
+    'day:2026-10-02:c': day(1, '/h/one'),
+    'hist:2026-09-10': { total: { ...ONE, usd: 40 }, models: { 'claude-opus-5-5': { ...ONE, usd: 40 } }, sessions: { d: { usd: 40, project: '/h/two' } } },
+  }
+  engine(on, undefined, store, () => false, { startedAt: at(9) })
+  await $.session.start({ cwd: '/w', surface: 'terminal', isInteractive: true })
+
+  // Today: a's $3 and this session's $5.50 estimate.
+  const overview = await texts($)
+  expect(overview).toMatch(/All time/)
+  expect(overview).toMatch(/\$51\.50/) // 40 + 1 + 2 + 3 + 5.50
+  expect(overview).toMatch(/since 2026-09-10/)
+  expect(overview).toMatch(/Last month[\s\S]*\$40\.00/)
+  expect(overview).toMatch(/This month[\s\S]*\$11\.50/)
+  expect(overview).toMatch(/Today[\s\S]*\$8\.50/)
+
+  const months = await texts($, async ui => {
+    await ui.press({ key: 'tab-chart' })
+  })
+  // Weeks by default; the week of Mon 10-19 holds b, a and this session.
+  expect(months).toMatch(/wk 10-19\s+\$10\.50/)
+
+  const byMonth = await texts($, async ui => {
+    await ui.press({ key: 'pick-month' })
+  })
+  expect(byMonth).toMatch(/Sep 2026\s+\$40\.00/)
+  expect(byMonth).toMatch(/Oct 2026\s+\$11\.50/)
+
+  const projects = await texts($, async ui => {
+    await ui.press({ key: 'tab-breakdown' })
+    await ui.press({ key: 'pick-project' })
+  })
+  expect(projects).toMatch(/~\/two\s+\$42\.00/)
+  expect(projects).toMatch(/~\/one\s+\$4\.00/)
+
+  // This month alone: d's September falls out.
+  const month = await texts($, async ui => {
+    await ui.press({ key: 'range' })
+  })
+  expect(month).toMatch(/~\/two\s+\$2\.00/)
+})
+
+test('the monthly budget toasts once when the month passes it', { options: { monthBudgetUsd: 6 } }, async ($, on) => {
+  const toasts: string[] = []
+  engine(on, undefined, { 'day:2026-10-03:x': { ...ONE, usd: 1 } }, () => false, { toasts })
+  await $.session.start({ cwd: '/w', surface: 'terminal', isInteractive: true })
+  // $1 + this session's $5.50: past $6.
+  expect(toasts.filter(t => /this month passed \$6/.test(t)).length).toBe(1)
+  for await (const _ of $.turn.step({ turnId: 't', index: 0, model: 'us.anthropic.claude-opus-5-5', messageCount: 1 })) {
+  }
+  expect(toasts.filter(t => /this month passed/.test(t)).length).toBe(1)
+})
+
+test('export writes a row per day and model, and per day and session', async ($, on) => {
+  const writes: Record<string, string> = {}
+  const store = { 'day:2026-10-20:b': { ...ONE, usd: 2, project: '/h/two', models: { 'claude-sonnet-4-5': { ...ONE, usd: 2 } } } }
+  engine(on, undefined, store, () => false, { writes })
+  await $.session.start({ cwd: '/w', surface: 'terminal', isInteractive: true })
+  await $.command.run({ command: 'bedrock-cost', args: 'export ~/out.csv' } as never)
+  expect(writes['/h/out.csv']).toMatch(/^date,model,requests,/)
+  expect(writes['/h/out.csv']).toContain('2026-10-20,claude-sonnet-4-5,1,0,0,0,0,2')
+  expect(writes['/h/out-sessions.csv']).toContain('2026-10-20,b,/h/two,2')
 })

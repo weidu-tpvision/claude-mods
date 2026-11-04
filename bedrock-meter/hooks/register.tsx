@@ -1,64 +1,44 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, Timer } from 'claude-code'
 
-import type { Context, Meter, Tally } from '../types'
+import type { Context, DayRecord, HistDay, HistoryView, Meter, Scan, Tally } from '../types'
 import { drawBand, hitRate, tokens, usd } from './band'
 import { bandsFile, parseOrder, stackBands } from './bands'
+import { DAY_KEY, emptyHist, histKey, loadDays, mergeSession, toCsv } from './history'
+import { drawHistory } from './historyPane'
 import { PUBLISHED } from './prices'
 import { costOf, scopeFor } from './pricing'
 import type { Usage } from './pricing'
+import { add, dateOf, sum, ZERO } from './tally'
+
+export { dateOf } from './tally'
 
 const PANE = 'bedrock-meter'
+const HISTORY = 'bedrock-history'
 const EMPTY: Meter = { byModel: {}, isWarned: false, isBackfilled: false }
 const EARLIER = 'earlier requests (Claude Code estimate)'
-
-const ZERO: Tally = { requests: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, usd: 0, isPriced: true }
 
 const meter = atom({ plugin: 'bedrock-meter', key: 'meter' } as const, EMPTY)
 const context = atom({ plugin: 'bedrock-meter', key: 'context' } as const, null as Context | null)
 const todayTally = atom({ plugin: 'bedrock-meter', key: 'today' } as const, ZERO)
 const monthTally = atom({ plugin: 'bedrock-meter', key: 'month' } as const, ZERO)
+const VIEW: HistoryView = { tab: 'overview', chart: 'week', by: 'model', range: 'all' }
+const view = atom({ plugin: 'bedrock-meter', key: 'view' } as const, VIEW)
+const scan = atom({ plugin: 'bedrock-meter', key: 'scan' } as const, { isRunning: false, done: 0, files: 0 } as Scan)
 
-// Daily totals older than this are dropped at each session start; it covers
-// the longest month, so the month's total always has its first day.
+// Where the old transcripts' scan left its mark: once done, it is not run again
+// on its own (`/bedrock-cost rescan` runs it).
+const SEEDED = 'history:seeded'
+
+// Daily totals per session older than this are rolled up into one record
+// per day (`hist:<date>`) at each session start; it covers the longest month,
+// so the month's total always has its first day among the per-session ones.
 const KEEP_DAYS = 31
 const DAY_MS = 86_400_000
 const TICK_MS = 60_000
 
 // `us.anthropic.claude-opus-5-5` and the transcript's `claude-opus-5-5` share a row.
 const rowOf = (model: string) => model.replace(/^.*anthropic\./, '')
-
-const add = (t: Tally, u: Usage, cost: number | undefined): Tally => ({
-  requests: t.requests + 1,
-  input: t.input + u.input_tokens,
-  output: t.output + u.output_tokens,
-  cacheRead: t.cacheRead + u.cache_read_input_tokens,
-  cacheWrite: t.cacheWrite + u.cache_creation_input_tokens,
-  usd: t.usd + (cost ?? 0),
-  isPriced: t.isPriced && cost !== undefined,
-})
-
-const sum = (tallies: Tally[]): Tally =>
-  tallies.reduce(
-    (all, t) => ({
-      requests: all.requests + t.requests,
-      input: all.input + t.input,
-      output: all.output + t.output,
-      cacheRead: all.cacheRead + t.cacheRead,
-      cacheWrite: all.cacheWrite + t.cacheWrite,
-      usd: all.usd + t.usd,
-      isPriced: all.isPriced && t.isPriced,
-    }),
-    ZERO,
-  )
-
-const pad = (n: number) => String(n).padStart(2, '0')
-
-// The local calendar day, so "today" turns over at the person's midnight.
-export const dateOf = (ms: number) => {
-  const d = new Date(ms)
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
-}
 
 // Daily totals are kept per session (`day:<date>:<session>`), so rebuilding
 // one session's figures never counts another's twice. Today and this month
@@ -73,16 +53,61 @@ async function refreshToday($: EngineInterface) {
   await update($, monthTally, () => sum(tallies.map(([, t]) => t)))
 }
 
-// Drops the days past KEEP_DAYS, and the per-day keys of the first version.
-async function prune($: EngineInterface) {
-  const cutoff = dateOf((await $.clock.now()) - KEEP_DAYS * DAY_MS)
+const cutoffOf = async ($: EngineInterface) => dateOf((await $.clock.now()) - KEEP_DAYS * DAY_MS)
+
+// Rolls the per-session days past KEEP_DAYS into the day's history, and drops
+// the per-day keys of the first version.
+async function rollUp($: EngineInterface) {
+  const cutoff = await cutoffOf($)
   for (const key of await $.store.keys()) {
-    const date = /^day:(\d{4}-\d\d-\d\d)(:|$)/.exec(key)
-    if (date && (date[2] === '' || date[1]! < cutoff)) await $.store.delete(key)
+    const day = DAY_KEY.exec(key)
+    if (!day) continue
+    const [, date, sid] = day
+    if (sid !== undefined && date! >= cutoff) continue
+    const r = (await $.store.get(key)) as DayRecord | undefined
+    if (sid !== undefined && r) {
+      const h = ((await $.store.get(histKey(date!))) as HistDay | undefined) ?? emptyHist()
+      await $.store.set(histKey(date!), mergeSession(h, sid, r))
+    }
+    await $.store.delete(key)
   }
 }
 
-type Settings = { premiumPct: number; budgetUsd: number }
+// A session's days: the recent ones replace its per-session records; one
+// past KEEP_DAYS joins that day's history, unless the session is in it already.
+async function writeDays($: EngineInterface, sid: string, days: Record<string, DayRecord>) {
+  const cutoff = await cutoffOf($)
+  for (const [date, r] of Object.entries(days)) {
+    if (date >= cutoff) {
+      await $.store.set(`day:${date}:${sid}`, r)
+    } else {
+      const h = ((await $.store.get(histKey(date))) as HistDay | undefined) ?? emptyHist()
+      if (!h.sessions[sid]) await $.store.set(histKey(date), mergeSession(h, sid, r))
+    }
+  }
+}
+
+const addDay = (r: DayRecord | undefined, model: string, u: Usage, cost: number | undefined, project: string | undefined): DayRecord => {
+  const one = r ?? { ...ZERO, models: {} }
+  const models = one.models ?? {}
+  return {
+    ...add(one, u, cost),
+    models: { ...models, [rowOf(model)]: add(models[rowOf(model)] ?? ZERO, u, cost) },
+    project: one.project ?? project,
+  }
+}
+
+type Settings = { premiumPct: number; budgetUsd: number; monthBudgetUsd: number }
+
+// Toasts once a month, when the month's total passes the monthly budget.
+async function checkMonthBudget($: EngineInterface, settings: Settings) {
+  if (settings.monthBudgetUsd <= 0) return
+  const month = await read($, monthTally)
+  const key = `warned:${dateOf(await $.clock.now()).slice(0, 7)}`
+  if (month.usd < settings.monthBudgetUsd || (await $.store.get(key))) return
+  await $.store.set(key, true)
+  $.ui.toast(`Bedrock this month passed ${usd(settings.monthBudgetUsd)} (now ${usd(month.usd)})`)
+}
 
 async function record($: EngineInterface, model: string, u: Usage, settings: Settings) {
   const cost = costOf(model, u, scopeFor(model, await $.session.model()), settings.premiumPct)
@@ -92,8 +117,9 @@ async function record($: EngineInterface, model: string, u: Usage, settings: Set
   }))
 
   const key = `day:${dateOf(await $.clock.now())}:${await $.session.id()}`
-  await $.store.set(key, add(((await $.store.get(key)) as Tally | undefined) ?? ZERO, u, cost))
+  await $.store.set(key, addDay((await $.store.get(key)) as DayRecord | undefined, model, u, cost, await $.session.root()))
   await refreshToday($)
+  await checkMonthBudget($, settings)
 
   const m = await read($, meter)
   const spent = sum(Object.values(m.byModel)).usd
@@ -103,8 +129,9 @@ async function record($: EngineInterface, model: string, u: Usage, settings: Set
   }
 }
 
-// `at`: the response's time in ms, NaN when the line carries none.
-type Turn = { model: string; usage: Usage; at: number }
+// `at`: the response's time in ms, NaN when the line carries none; `cwd`:
+// the folder the session ran in, as the line says.
+type Turn = { model: string; usage: Usage; at: number; cwd?: string }
 
 // Claude Code's stand-in for a response that never came (an interrupted or
 // failed request): no tokens, and no model to price, so it is left out.
@@ -122,6 +149,7 @@ function parseLine(line: string, into: Map<string, Turn>) {
     into.set(message.id, {
       model: String(message.model ?? 'unknown'),
       at: Date.parse(String(row.timestamp ?? '')),
+      ...(typeof row.cwd === 'string' ? { cwd: row.cwd } : {}),
       usage: {
         input_tokens: u.input_tokens ?? 0,
         output_tokens: u.output_tokens ?? 0,
@@ -163,9 +191,23 @@ async function readTranscript($: EngineInterface, file: TranscriptFile, into: Ma
 
 // The session's transcript and its subagents', or undefined when the
 // session's own cannot be found.
+const projectsDir = async ($: EngineInterface) =>
+  `${(await $.env.get('CLAUDE_CONFIG_DIR')) ?? `${await $.env.get('HOME')}/.claude`}/projects`
+
+// A session's own transcript and its subagents', in the project folder `dir`.
+async function sessionFiles($: EngineInterface, dir: string, sid: string, size: number): Promise<TranscriptFile[]> {
+  const files = [{ path: `${dir}/${sid}.jsonl`, size }]
+  const subagents = `${dir}/${sid}/subagents`
+  if (await $.fs.exists(subagents)) {
+    for (const entry of await $.fs.list(subagents)) {
+      if (entry.kind === 'file' && entry.name.endsWith('.jsonl')) files.push({ path: `${subagents}/${entry.name}`, size: entry.size })
+    }
+  }
+  return files
+}
+
 async function transcriptFiles($: EngineInterface, sid: string): Promise<TranscriptFile[] | undefined> {
-  const config = (await $.env.get('CLAUDE_CONFIG_DIR')) ?? `${await $.env.get('HOME')}/.claude`
-  const projects = `${config}/projects`
+  const projects = await projectsDir($)
   const slug = (await $.session.root()).replace(/[^a-zA-Z0-9]/g, '-')
   let dir = `${projects}/${slug}`
   if (!(await $.fs.exists(`${dir}/${sid}.jsonl`))) {
@@ -177,15 +219,20 @@ async function transcriptFiles($: EngineInterface, sid: string): Promise<Transcr
     if (found.length === 0) return undefined
     dir = `${projects}/${found[0]}`
   }
-  const main = `${dir}/${sid}.jsonl`
-  const files = [{ path: main, size: (await $.fs.stat(main)).size }]
-  const subagents = `${dir}/${sid}/subagents`
-  if (await $.fs.exists(subagents)) {
-    for (const entry of await $.fs.list(subagents)) {
-      if (entry.kind === 'file' && entry.name.endsWith('.jsonl')) files.push({ path: `${subagents}/${entry.name}`, size: entry.size })
-    }
+  return sessionFiles($, dir, sid, (await $.fs.stat(`${dir}/${sid}.jsonl`)).size)
+}
+
+// A transcript's requests, priced, by day.
+function daysOf(turns: Iterable<Turn>, sessionModel: string, settings: Settings, now: number, project?: string) {
+  const days: Record<string, DayRecord> = {}
+  const byModel: Record<string, Tally> = {}
+  for (const turn of turns) {
+    const cost = costOf(turn.model, turn.usage, scopeFor(turn.model, sessionModel), settings.premiumPct)
+    const date = dateOf(Number.isFinite(turn.at) ? turn.at : now)
+    byModel[rowOf(turn.model)] = add(byModel[rowOf(turn.model)] ?? ZERO, turn.usage, cost)
+    days[date] = addDay(days[date], turn.model, turn.usage, cost, project ?? turn.cwd)
   }
-  return files
+  return { days, byModel }
 }
 
 // Counts what the session spent before the mod loaded, once per session.
@@ -209,17 +256,13 @@ async function backfill($: EngineInterface, settings: Settings) {
     isRead = false
   }
 
-  const byModel: Record<string, Tally> = {}
-  const days: Record<string, Tally> = {}
+  const project = await $.session.root()
+  let byModel: Record<string, Tally> = {}
+  let days: Record<string, DayRecord> = {}
   if (isRead) {
     // The transcript holds every request: each day of this session is rebuilt from it.
     for (const key of ownKeys) await $.store.delete(key)
-    for (const turn of turns.values()) {
-      const cost = costOf(turn.model, turn.usage, scopeFor(turn.model, sessionModel), settings.premiumPct)
-      const date = dateOf(Number.isFinite(turn.at) ? turn.at : now)
-      byModel[rowOf(turn.model)] = add(byModel[rowOf(turn.model)] ?? ZERO, turn.usage, cost)
-      days[date] = add(days[date] ?? ZERO, turn.usage, cost)
-    }
+    ;({ days, byModel } = daysOf(turns.values(), sessionModel, settings, now, project))
   } else {
     // Claude Code's total, priced at the global rates: a regional session adds
     // the premium. It counts from the session's first launch, a resume's
@@ -234,13 +277,72 @@ async function backfill($: EngineInterface, settings: Settings) {
       byModel[EARLIER] = tally
       if (dateOf(usage.startedAt) === today) {
         for (const key of ownKeys) await $.store.delete(key)
-        days[today] = tally
+        days[today] = { ...tally, models: { [EARLIER]: tally }, project }
       }
     }
   }
 
   await update($, meter, () => ({ byModel, isWarned: false, isBackfilled: true }))
-  for (const [date, tally] of Object.entries(days)) await $.store.set(`day:${date}:${sid}`, tally)
+  await writeDays($, sid, days)
+}
+
+// Seeds the history from every transcript Claude Code still keeps (it deletes
+// them after `cleanupPeriodDays`, 30 by default), this session's aside: the
+// backfill counts that one. A transcript rebuilds its session's recent days,
+// as the backfill does, and adds its older days to the history where the
+// session is not in it yet. Other sessions are priced at this session's kind
+// of inference profile: the transcript does not name theirs.
+async function seed($: EngineInterface, settings: Settings) {
+  const sid = await $.session.id()
+  const sessionModel = await $.session.model()
+  const projects = await projectsDir($)
+  const sessions: { dir: string; sid: string; size: number }[] = []
+  if (await $.fs.exists(projects)) {
+    for (const folder of await $.fs.list(projects)) {
+      if (folder.kind !== 'dir') continue
+      const dir = `${projects}/${folder.name}`
+      for (const entry of await $.fs.list(dir)) {
+        const name = entry.name.replace(/\.jsonl$/, '')
+        if (entry.kind === 'file' && name !== entry.name && name !== sid) sessions.push({ dir, sid: name, size: entry.size })
+      }
+    }
+  }
+  await update($, scan, () => ({ isRunning: true, done: 0, files: sessions.length }))
+  const keys = await $.store.keys()
+  let counted = 0
+  for (const [i, one] of sessions.entries()) {
+    const turns = new Map<string, Turn>()
+    try {
+      for (const file of await sessionFiles($, one.dir, one.sid, one.size)) await readTranscript($, file, turns)
+    } catch {
+      continue // unreadable now: a rescan tries it again
+    } finally {
+      await update($, scan, s => ({ ...s, done: i + 1 }))
+    }
+    if (turns.size === 0) continue
+    const { days } = daysOf(turns.values(), sessionModel, settings, await $.clock.now())
+    for (const key of keys) if (key.startsWith('day:') && key.endsWith(`:${one.sid}`)) await $.store.delete(key)
+    await writeDays($, one.sid, days)
+    counted++
+  }
+  const at = await $.clock.now()
+  await $.store.set(SEEDED, { at, sessions: counted })
+  await update($, scan, () => ({ isRunning: false, done: sessions.length, files: sessions.length, at, sessions: counted }))
+  await refreshToday($)
+}
+
+let scanning: Promise<void> | undefined // one scan at a time
+
+async function runScan($: EngineInterface, settings: Settings) {
+  scanning ??= seed($, settings)
+    .catch(async (err: unknown) => {
+      const error = String((err as Error)?.message ?? err)
+      await update($, scan, s => ({ ...s, isRunning: false, error })).catch(() => {}) // the session may be gone
+    })
+    .finally(() => {
+      scanning = undefined
+    })
+  return scanning
 }
 
 // The band order file, as hamzafer's claude-code-mods checklist saves it; [] on any error.
@@ -253,6 +355,7 @@ export const register: Register = (on, options) => {
   const settings: Settings = {
     premiumPct: Number(options.regionalPremiumPct ?? 10),
     budgetUsd: Number(options.budgetUsd ?? 0),
+    monthBudgetUsd: Number(options.monthBudgetUsd ?? 0),
   }
   let lastModel = ''
   let timer: Timer | undefined
@@ -262,13 +365,18 @@ export const register: Register = (on, options) => {
     const r = await next(e)
     await $.command.register({
       name: 'bedrock-cost',
-      description: 'Show Bedrock token usage and estimated cost by model',
+      description: 'Bedrock cost: this session by model; `history` for totals, histograms and breakdowns',
+      argumentHint: '[history | rescan | export [file]]',
     })
     if (options.openPane === true) void $.ui.open({ id: PANE, title: 'Bedrock meter' })
     $.ui.status(undefined) // the band took over from the status line of the first version
-    await prune($)
+    await rollUp($)
     await backfill($, settings)
     await refreshToday($)
+    await checkMonthBudget($, settings)
+    const seeded = (await $.store.get(SEEDED)) as { at: number; sessions: number } | undefined
+    if (seeded) await update($, scan, s => (s.isRunning ? s : { ...s, at: seeded.at, sessions: seeded.sessions }))
+    else void runScan($, settings)
     const usage = await $.session.usage().catch(() => undefined)
     if (usage) {
       const { tokens, window, percent } = usage.context
@@ -290,7 +398,28 @@ export const register: Register = (on, options) => {
     return r
   })
 
-  on('command.run', { command: 'bedrock-cost' }, async $ => {
+  on('command.run', { command: 'bedrock-cost' }, async ($, e) => {
+    const [verb = '', ...rest] = e.args.trim().split(/\s+/)
+    if (verb === 'history') {
+      const opened = await $.ui.open({ id: HISTORY, title: 'Bedrock history', focus: true })
+      const line = 'Bedrock history: o overview · h histogram (d/w/m) · b breakdown (e/p/s) · r range · Esc back to the prompt.'
+      return { text: opened.isPlaced ? line : `${line} Widen the terminal to see the pane.` }
+    }
+    if (verb === 'rescan') {
+      await runScan($, settings)
+      const s = await read($, scan)
+      return { text: s.error ? `Transcript scan failed: ${s.error}` : `Read ${s.files} old transcripts; ${s.sessions ?? 0} had Bedrock requests.` }
+    }
+    if (verb === 'export') {
+      const home = await $.env.get('HOME')
+      const file = rest.join(' ').replace(/^~(?=\/|$)/, home ?? '~') || `${home}/bedrock-meter-history.csv`
+      const sessionsFile = file.replace(/(\.csv)?$/, '-sessions.csv')
+      const { models, sessions } = toCsv(await loadDays($))
+      await $.fs.write(file, models)
+      await $.fs.write(sessionsFile, sessions)
+      return { text: `Wrote ${file} (per day and model) and ${sessionsFile} (per day and session).` }
+    }
+    if (verb !== '') return { text: `Unknown: /bedrock-cost ${verb}. Try /bedrock-cost, /bedrock-cost history, rescan or export [file].` }
     const opened = await $.ui.open({ id: PANE, title: 'Bedrock meter' })
     const total = sum(Object.values((await read($, meter)).byModel))
     const line =
@@ -391,6 +520,7 @@ export const register: Register = (on, options) => {
               </Text>
             )}
             {engine !== undefined && <Text dimColor>Claude Code /cost (global rates) {usd(engine)}</Text>}
+            <Text dimColor>/bedrock-cost history: totals, histograms, by model and project</Text>
             <Text dimColor>
               Prices: AWS list of {PUBLISHED.slice(0, 10)}
               {settings.budgetUsd > 0 ? ` · budget ${usd(settings.budgetUsd)}` : ''}
@@ -399,5 +529,21 @@ export const register: Register = (on, options) => {
         )}
       </Box>
     )
+  })
+
+  on('ui.render', { component: 'Pane', requestId: HISTORY }, async ($, e) => {
+    const now = await $.clock.now()
+    await read($, monthTally) // a new request redraws the pane
+    return drawHistory($.ui.resolve(e), {
+      days: await loadDays($),
+      today: dateOf(now),
+      now,
+      view: await read($, view),
+      scan: await read($, scan),
+      monthBudgetUsd: settings.monthBudgetUsd,
+      columns: e.props.bodyColumns,
+      home: await $.env.get('HOME'),
+      onView: patch => void update($, view, v => ({ ...v, ...patch })),
+    })
   })
 }

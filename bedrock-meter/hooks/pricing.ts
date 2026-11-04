@@ -61,3 +61,6 @@ export const costOf = (model: string, u: Usage, scope: Scope = 'global', premium
     1_000_000
   return usd * surcharge
 }
+
+// The table's row for a model, or undefined where it has none.
+export const rowFor = (model: string): Row | undefined => ROWS.find(one => one.family === familyOf(model))
