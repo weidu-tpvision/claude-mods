@@ -18,17 +18,29 @@ export type Figures = { total: Tally; today: Tally; month: Tally; budgetUsd: num
 
 type Segment = { text: string; color?: string; dim?: boolean; bold?: boolean }
 
-type Layout = { isLong: boolean; cells: number; hasTokens: boolean; hasCache: boolean; hasToday: boolean; hasMonth: boolean }
+type Layout = {
+  isLong: boolean
+  cells: number
+  hasTokens: boolean
+  hasWindow: boolean
+  hasCache: boolean
+  hasToday: boolean
+  hasMonth: boolean
+}
 
-// Widest first: the band sheds token counts, then the month's total, then
-// the cache figure and the labels, then the bar and today's total, so it
-// keeps to one line.
+const ALL = { isLong: true, cells: 8, hasTokens: true, hasWindow: true, hasCache: true, hasToday: true, hasMonth: true }
+
+// Widest first: the band sheds token counts, then the context's token
+// figures (its percent stays), then the cache figure, then the labels, the
+// month's total, and last the bar and today's total, so it keeps to one line.
 const LAYOUTS: Layout[] = [
-  { isLong: true, cells: 8, hasTokens: true, hasCache: true, hasToday: true, hasMonth: true },
-  { isLong: true, cells: 8, hasTokens: false, hasCache: true, hasToday: true, hasMonth: true },
-  { isLong: true, cells: 8, hasTokens: false, hasCache: true, hasToday: true, hasMonth: false },
-  { isLong: false, cells: 5, hasTokens: false, hasCache: false, hasToday: true, hasMonth: false },
-  { isLong: false, cells: 0, hasTokens: false, hasCache: false, hasToday: false, hasMonth: false },
+  ALL,
+  { ...ALL, hasTokens: false },
+  { ...ALL, hasTokens: false, hasWindow: false },
+  { ...ALL, hasTokens: false, hasWindow: false, hasCache: false },
+  { ...ALL, isLong: false, cells: 5, hasTokens: false, hasWindow: false, hasCache: false },
+  { ...ALL, isLong: false, cells: 5, hasTokens: false, hasWindow: false, hasCache: false, hasMonth: false },
+  { isLong: false, cells: 0, hasTokens: false, hasWindow: false, hasCache: false, hasToday: false, hasMonth: false },
 ]
 
 const SPLIT = ' · '
@@ -74,7 +86,7 @@ function parts(f: Figures, l: Layout): Segment[][] {
       { text: l.cells > 0 ? `${bar(context.percent, l.cells)} ` : '', color },
       { text: `${Math.round(context.percent)}%`, color },
       {
-        text: l.isLong && context.tokens !== undefined ? ` ${tokens(context.tokens)}/${tokens(context.window)}` : '',
+        text: l.hasWindow && context.tokens !== undefined ? ` ${tokens(context.tokens)}/${tokens(context.window)}` : '',
         dim: true,
       },
     ])

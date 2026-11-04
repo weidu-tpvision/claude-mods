@@ -1,6 +1,6 @@
 {
   "name": "bedrock-meter",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Token and USD meter for pay-per-token Amazon Bedrock sessions: a band above the prompt with cost, context, cache, and today's and this month's totals, priced at AWS's own on-demand rates",
   "author": {
     "name": "weidu-tpvision",

@@ -295,16 +295,22 @@ test('the month adds up this calendar month\'s days, every session\'s', async ($
   }
   engine(on, undefined, store)
   await $.session.start({ cwd: '/w', surface: 'terminal', isInteractive: true })
+  await $.session.measure({ context: CONTEXT, rateLimits: [], changed: ['context'] })
   // This session's $5.50 estimate is today's: today $6.50, the month $8.50.
   expect(await paneLine($, /^Today/)).toMatch(/\$6\.50/)
   expect(await paneLine($, /^Month/)).toMatch(/\$8\.50/)
   expect(await bandLine($, 200)).toMatch(/today \$6\.50 · month \$8\.50$/)
-  // Narrower, the month goes before the cache figure.
+  // Narrower, the token counts go first, then the context's figures, then
+  // the cache: the month stays after them.
   const wide = await bandLine($, 200)
   const noTokens = wide.replace(/ · in \S+ out \S+/, '')
-  const noMonth = noTokens.replace(/ · month \S+/, '')
+  const noWindow = noTokens.replace(/ \S+\/\S+ ·/, ' ·')
+  const noCache = noWindow.replace(/ · cache \S+ \S+/, '')
+  // The band has the body's width less 2.
   expect(await bandLine($, noTokens.length + 2)).toBe(noTokens)
-  expect(await bandLine($, noTokens.length + 1)).toBe(noMonth)
+  expect(await bandLine($, noTokens.length + 1)).toBe(noWindow)
+  expect(await bandLine($, noWindow.length + 1)).toBe(noCache)
+  expect(noCache).toMatch(/month \$8\.50$/)
 })
 
 // A budget the session's two requests come to 80% of.
