@@ -10,6 +10,84 @@ Bedrock $4.37 · ctx █▄▁▁▁▁▁▁ 18% · cache 6.1M 94% · today $11
 $4.37 · ctx ▇▁▁▁▁ 18% · today $11.82 · month $163
 ```
 
+The pane `/bedrock-cost` opens, at about 72 columns, one tab at a time (example figures; the keys before the colons switch tabs):
+
+```
+c: Session  o: Overview  h: Histogram  b: Breakdown
+
+claude-opus-5-5
+  $4.21 · 38 req
+  in 21.4k · write 330.0k · read 5.6M · out 48.6k
+claude-haiku-5-5
+  $0.010 · 9 req
+  in 3.8k · write 18.2k · read 287.5k · out 6.4k
+
+Session $4.22 · cache hit 94%
+Today $26.27 · out 311.6k
+Month $58.75 · out 702.3k
+Context 18% · 182.4k of 1.0M
+Claude Code /cost (global rates) $3.84
+Prices: AWS list of 2026-10-12
+```
+
+```
+c: Session  o: Overview  h: Histogram  b: Breakdown
+
+All time    $1,392  since 2026-08-03 · 72 active days · avg $19.33/day
+This year   $1,392
+Last month    $586  Oct
+This month  $58.75  ≈ $486 by month end
+This week   $58.75  since Mo 11-02
+Today       $26.27
+
+Where it went: cache write 53% · output 25% · cache read 20% · input 3%
+Cache saved ≈ $165 this month, $4,797 all time · hit rate 85% this month
+Hit rate, last 8 weeks ▆▇▇█▆▇▇▆
+Regional surcharge ≈ $9.22 this month, $219 all time (over global. rates)
+19,900 requests · $0.070 per request on average
+
+r: All time  Seeded from 41 old transcripts. /bedrock-cost rescan · /bedrock-cost export
+```
+
+```
+c: Session  o: Overview  h: Histogram  b: Breakdown
+
+d: Days  w: Weeks  m: Months
+
+wk 08-17 $92.26 █████████████████████████████▍
+wk 08-24 $74.00 ███████████████████████▋
+wk 08-31   $114 ████████████████████████████████████▌
+wk 09-07 $80.72 █████████████████████████▊
+wk 09-14 $83.18 ██████████████████████████▌
+wk 09-21   $113 ████████████████████████████████████▏
+wk 09-28 $96.86 ██████████████████████████████▉
+wk 10-05   $118 █████████████████████████████████████▊
+wk 10-12   $126 ████████████████████████████████████████
+wk 10-19   $137 ███████████████████████████████████████████▋
+wk 10-26   $141 █████████████████████████████████████████████
+wk 11-02 $58.75 ██████████████████▊ so far
+$1,236 over these 12 weeks · avg $103/week
+
+Seeded from 41 old transcripts. /bedrock-cost rescan · /bedrock-cost export
+```
+
+```
+c: Session  o: Overview  h: Histogram  b: Breakdown
+
+e: Models  p: Projects  s: Top sessions
+
+~/tools/claude/mods                         $359  26% ██████████
+  36 sessions
+~/work/infra                                $356  26% █████████▉
+  36 sessions
+~/work/tv-app                               $351  25% █████████▊
+  36 sessions
+~/tools/claude                              $325  23% █████████
+  36 sessions
+
+r: All time  Seeded from 41 old transcripts. /bedrock-cost rescan · /bedrock-cost export
+```
+
 - **Band above the prompt:** session cost, a context bar (green, yellow from 75%, red from 90%), input/output tokens, cache reads and hit rate, today's total and this month's. On a narrow terminal it drops the token counts first, then the context's token figures (its percent stays), then the cache figure, then the labels and the month's total, and last the bar and today's total, so it stays on one line. With a budget set, the cost turns yellow at 70% of it and red once passed.
 - **Next to other band mods:** it stacks with hamzafer's [claude-code-mods](https://github.com/hamzafer/claude-code-mods) bands (context-bar, token-weather, ...) through their shared `hooks/bands.ts` (MIT), in the order their checklist saves.
 - **`/bedrock-cost`:** opens the pane, for what the band has no room for. It takes the keyboard, as `/usage` does, and Esc closes it. `/bedrock-cost` opens it on the session, `/bedrock-cost history` on the overview; the keys move between its tabs.

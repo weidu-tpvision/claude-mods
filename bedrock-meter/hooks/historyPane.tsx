@@ -234,7 +234,7 @@ function Overview(ui: Ui, f: HistoryFigures) {
         )}
         {all.total.requests > 0 && (
           <Text dimColor>
-            {all.total.requests} requests · {usd(all.total.usd / all.total.requests)} per request on average
+            {all.total.requests.toLocaleString('en-US')} requests · {usd(all.total.usd / all.total.requests)} per request on average
           </Text>
         )}
       </Box>
@@ -293,7 +293,7 @@ function Breakdown(ui: Ui, f: HistoryFigures) {
       key: model,
       name: model,
       usd: t.usd,
-      note: t.requests > 0 ? `${t.requests} req · hit ${hitRate(t)}%` : undefined,
+      note: t.requests > 0 ? `${t.requests.toLocaleString('en-US')} req · hit ${hitRate(t)}%` : undefined,
     }))
   } else if (f.view.by === 'project') {
     const byProject = new Map<string, { usd: number; sessions: number }>()
