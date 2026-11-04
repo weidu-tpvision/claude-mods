@@ -8,7 +8,9 @@ A token and cost meter for Claude Code on Amazon Bedrock (pay per token, no subs
 - **Pricing:** AWS's own on-demand rates, global and regional, in `hooks/prices.ts`, generated from the AWS price list (us-east-1) by `.github/scripts/bedrock_prices.py`. A `global.` profile bills the global rates; in-region and geo profiles (`us.`, `eu.`, ...) the regional ones, which AWS sets about 10% higher for most current models and not at all for some. Cache writes bill at AWS's 5-minute cache-write rate, the TTL Claude Code uses by default; requests that write the 1-hour cache are underestimated. A weekly workflow reruns the script and opens a pull request when a price moves.
 - **Options** (`/config`): a fallback regional premium % (for a model listed with global prices only), a session budget that shows a toast when it is passed, and whether the pane opens when a session starts.
 
-Every model request is counted, including subagents and compaction. Requests made before the mod loaded (or before a resume) are read back from the session transcript. For `global.` profiles the session cost matches Claude Code's own `/cost`, which prices at the global rates; for regional ones it comes out higher by AWS's regional surcharge. Daily totals carry across sessions, by local calendar day, and are kept for 31 days. `/clear` resets the session meter.
+Every model request is counted, including subagents and compaction. Requests made before the mod loaded, or in a resumed session's earlier runs, are read back from the session transcript, however long it is (one over 4 MiB is streamed through `cat`). Claude Code's `<synthetic>` placeholders for requests that never got a response are skipped. For `global.` profiles the session cost matches Claude Code's own `/cost` and `/usage`, which price at the global rates and, since 2.1.318, also count a resumed session from its first launch. For regional profiles it comes out higher by AWS's regional surcharge. `/clear` resets the session meter.
+
+**Today** adds up every session's requests made on the current local calendar day. A session resumed on a later day adds only that day's requests; its earlier ones stay on their own dates. Daily totals are kept for 31 days. If the transcript can't be read, the session cost falls back to Claude Code's own total. That total has no dates, so it goes on today only when the session began today; otherwise the days keep what the meter counted live.
 
 Costs are estimates from the price table (the pane says which AWS list it is from); your AWS bill is the final word.
 
@@ -22,7 +24,7 @@ From the repository's root: it fetches the AWS price list, rewrites `bedrock-met
 
 ## Install
 
-At the prompt of a Claude Code terminal session (tested with Claude Code 2.1.306):
+At the prompt of a Claude Code terminal session (tested with Claude Code 2.1.318):
 
 ```
 /plugin install bedrock-meter --marketplace weidu-tpvision/claude-mods

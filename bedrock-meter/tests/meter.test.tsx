@@ -59,7 +59,17 @@ const SUMMARY = { role: 'user' as const, text: 'summary', toolUses: [] }
 const NOW = at(12)
 const CONTEXT = { tokens: 84_000, window: 200_000, percent: 42 }
 
-function engine(on: On, transcript: string | undefined, store: Record<string, unknown> = {}, isStoreBroken = () => false) {
+// `size`: what fs.stat says of the transcript (over 4 MiB, it is streamed);
+// `startedAt`: the session's first launch, as session.usage reports it.
+type Extra = { size?: number; startedAt?: number; cats?: string[] }
+
+function engine(
+  on: On,
+  transcript: string | undefined,
+  store: Record<string, unknown> = {},
+  isStoreBroken = () => false,
+  extra: Extra = {},
+) {
   mock.clock(on, { now: NOW })
   // The plugin's store, kept here so a test can read what is left in it.
   const kept = new Map(Object.entries(store))
@@ -76,14 +86,25 @@ function engine(on: On, transcript: string | undefined, store: Record<string, un
   on('session.id', () => ({ value: SID }))
   on('session.root', () => ({ value: '/w' }))
   on('session.model', () => ({ value: 'us.anthropic.claude-opus-5-5' }))
-  on('session.usage', () => ({ value: { startedAt: 0, context: { window: 200_000 }, rateLimits: [], cost: { usd: 5 } } }))
+  on('session.usage', () => ({ value: { startedAt: extra.startedAt ?? at(9), context: { window: 200_000 }, rateLimits: [], cost: { usd: 5 } } }))
   on('session.measure', (_, e) => ({ changed: e.changed }))
   on('session.compact', () => ({ messages: [SUMMARY], usage: USAGE }))
   on('ui.render', ($, e) => $.ui.resolve(e).Text({ children: 'engine band' }))
   on('env.get', (_, e) => ({ value: e.name === 'HOME' ? '/h' : undefined }))
   on('fs.exists', (_, e) => ({ value: transcript !== undefined && e.path === `${DIR}/${SID}.jsonl` }))
   on('fs.list', () => ({ value: [] }))
-  on('fs.read', () => ({ value: transcript ?? '' }))
+  on('fs.read', (_, e) => {
+    if ((extra.size ?? 0) > 4 * 1024 * 1024) throw new Error(`${e.path}: over 4 MiB`)
+    return { value: transcript ?? '' }
+  })
+  on('fs.stat', () => ({ value: { kind: 'file' as const, size: extra.size ?? (transcript ?? '').length, mtimeMs: 0, isLink: false } }))
+  // cat hands the file over in pieces that end mid-line.
+  on('process.spawn', async function* (_, e) {
+    extra.cats?.push(e.argv.join(' '))
+    const text = transcript ?? ''
+    for (let i = 0; i < text.length; i += 97) yield { stream: 'stdout' as const, text: text.slice(i, i + 97) }
+    return { value: { code: 0, signal: null } }
+  })
   on('turn.step', async function* (_, e) {
     return {
       turnId: e.turnId, index: e.index, answer: 'hi', toolUses: [], stopReason: 'end_turn' as const,
@@ -163,10 +184,59 @@ test('requests before the mod loaded come from the transcript, once each', async
   expect(await sessionLine(() => $.ui.mount({ ...PANE, surface: 'terminal' }))).toMatch(dollars(3 * opusRegional()))
 })
 
+async function paneLine($: { ui: { mount: (t: never) => Promise<any> } }, start: RegExp) {
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' } as never)
+  const text: string | undefined = (await ui.find({ type: 'Text', text: start }))?.text
+  await ui.unmount()
+  return text
+}
+
+const ONE = { requests: 1, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, usd: 1, isPriced: true }
+
 test('without a transcript, Claude Code\'s estimate plus the premium stands in', async ($, on) => {
-  engine(on, undefined)
+  // Begun today: all of Claude Code's total is today's, replacing an earlier run's count.
+  const kept = engine(on, undefined, { 'day:2026-10-21:s1': ONE, 'day:2026-10-21:other': ONE })
   await $.session.start({ cwd: '/w', surface: 'terminal', isInteractive: true })
   expect(await sessionLine(() => $.ui.mount({ ...PANE, surface: 'terminal' }))).toMatch(/\$5\.50/)
+  expect(await paneLine($, /^Today/)).toMatch(/\$6\.50/)
+  expect(cents((kept.get('day:2026-10-21:s1') as typeof ONE).usd)).toBe(550)
+})
+
+test('a session resumed on a later day keeps its earlier days out of today', async ($, on) => {
+  const yesterday = new Date(2026, 9, 20, 15).getTime()
+  const resumed = [
+    { type: 'assistant', timestamp: new Date(yesterday).toISOString(), message: { id: 'm1', model: 'claude-opus-5-5', usage: USAGE } },
+    { type: 'assistant', timestamp: new Date(at(10)).toISOString(), message: { id: 'm2', model: 'claude-opus-5-5', usage: USAGE } },
+  ].map(row => JSON.stringify(row)).join('\n')
+  const kept = engine(on, resumed, { 'day:2026-10-20:s1': { ...ONE, usd: 99 }, 'day:2026-10-21:other': ONE }, () => false, { startedAt: yesterday })
+  await $.session.start({ cwd: '/w', surface: 'terminal', isInteractive: true })
+  expect(await sessionLine(() => $.ui.mount({ ...PANE, surface: 'terminal' }))).toMatch(dollars(2 * opusRegional()))
+  expect(await paneLine($, /^Today/)).toMatch(dollars(opusRegional() + 1))
+  // Yesterday is rebuilt from the transcript, not added to.
+  expect(cents((kept.get('day:2026-10-20:s1') as typeof ONE).usd)).toBe(cents(opusRegional()))
+})
+
+test('without a transcript, a resume from an earlier day does not put the earlier spend on today', async ($, on) => {
+  const yesterday = new Date(2026, 9, 20, 15).getTime()
+  const store = { 'day:2026-10-20:s1': { ...ONE, usd: 3 }, 'day:2026-10-21:s1': ONE, 'day:2026-10-21:other': ONE }
+  const kept = engine(on, undefined, store, () => false, { startedAt: yesterday })
+  await $.session.start({ cwd: '/w', surface: 'terminal', isInteractive: true })
+  // The session carries Claude Code's whole total; the days keep what was counted live.
+  expect(await sessionLine(() => $.ui.mount({ ...PANE, surface: 'terminal' }))).toMatch(/\$5\.50/)
+  expect(await paneLine($, /^Today/)).toMatch(/\$2\.00/)
+  expect((kept.get('day:2026-10-20:s1') as typeof ONE).usd).toBe(3)
+})
+
+test('a transcript over 4 MiB is streamed, and synthetic responses are left out', async ($, on) => {
+  const synthetic = { type: 'assistant', timestamp: new Date(at(10, 2)).toISOString(), message: { id: 'm3', model: '<synthetic>', usage: { ...USAGE, input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } } }
+  const cats: string[] = []
+  engine(on, `${TRANSCRIPT}\n${JSON.stringify(synthetic)}\n`, {}, () => false, { size: 8_000_000, cats })
+  await $.session.start({ cwd: '/w', surface: 'terminal', isInteractive: true })
+  expect(cats).toEqual([`cat -- ${DIR}/${SID}.jsonl`])
+  expect(await sessionLine(() => $.ui.mount({ ...PANE, surface: 'terminal' }))).toMatch(dollars(2 * opusRegional()))
+  // No unpriced row, so the band's cost carries no "+".
+  expect(await paneLine($, /unpriced/)).toBe(undefined)
+  expect(await bandLine($, 200)).not.toMatch(/\+/)
 })
 
 const BAND = (bodyColumns: number) =>

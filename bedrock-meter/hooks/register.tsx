@@ -100,34 +100,64 @@ async function record($: EngineInterface, model: string, u: Usage, settings: Set
 // `at`: the response's time in ms, NaN when the line carries none.
 type Turn = { model: string; usage: Usage; at: number }
 
+// Claude Code's stand-in for a response that never came (an interrupted or
+// failed request): no tokens, and no model to price, so it is left out.
+const SYNTHETIC = '<synthetic>'
+
 // One response per message id: the transcript writes a line per content block.
-function parseTranscript(text: string, into: Map<string, Turn>) {
-  for (const line of text.split('\n')) {
-    if (!line.includes('"usage"')) continue
-    try {
-      const row = JSON.parse(line)
-      const message = row?.message
-      const u = message?.usage
-      if (row?.type !== 'assistant' || !u || typeof message.id !== 'string') continue
-      into.set(message.id, {
-        model: String(message.model ?? 'unknown'),
-        at: Date.parse(String(row.timestamp ?? '')),
-        usage: {
-          input_tokens: u.input_tokens ?? 0,
-          output_tokens: u.output_tokens ?? 0,
-          cache_read_input_tokens: u.cache_read_input_tokens ?? 0,
-          cache_creation_input_tokens: u.cache_creation_input_tokens ?? 0,
-        },
-      })
-    } catch {
-      // A line cut short while being written: the next load reads it whole.
-    }
+function parseLine(line: string, into: Map<string, Turn>) {
+  if (!line.includes('"usage"')) return
+  try {
+    const row = JSON.parse(line)
+    const message = row?.message
+    const u = message?.usage
+    if (row?.type !== 'assistant' || !u || typeof message.id !== 'string') return
+    if (message.model === SYNTHETIC) return
+    into.set(message.id, {
+      model: String(message.model ?? 'unknown'),
+      at: Date.parse(String(row.timestamp ?? '')),
+      usage: {
+        input_tokens: u.input_tokens ?? 0,
+        output_tokens: u.output_tokens ?? 0,
+        cache_read_input_tokens: u.cache_read_input_tokens ?? 0,
+        cache_creation_input_tokens: u.cache_creation_input_tokens ?? 0,
+      },
+    })
+  } catch {
+    // A line cut short while being written: the next load reads it whole.
   }
 }
 
-// The session's transcript and its subagents', or undefined when one cannot
-// be found or read (over the 4 MiB a read allows).
-async function transcriptFiles($: EngineInterface, sid: string): Promise<string[] | undefined> {
+function parseTranscript(text: string, into: Map<string, Turn>) {
+  for (const line of text.split('\n')) parseLine(line, into)
+}
+
+// What one $.fs.read takes; a longer transcript is streamed instead.
+const READ_LIMIT = 4 * 1024 * 1024
+
+type TranscriptFile = { path: string; size: number }
+
+// A transcript into `into`: read whole when it fits one $.fs.read, else
+// streamed through `cat` a piece at a time, so a long session's file (a day
+// of work passes 4 MiB) is still read back. Rejects when it cannot be read.
+async function readTranscript($: EngineInterface, file: TranscriptFile, into: Map<string, Turn>) {
+  if (file.size <= READ_LIMIT) return parseTranscript(await $.fs.read(file.path), into)
+  let rest = ''
+  const cat = $.process.spawn({ argv: ['cat', '--', file.path] })
+  for await (const piece of cat) {
+    if (piece.stream !== 'stdout') continue
+    const lines = (rest + piece.text).split('\n')
+    rest = lines.pop() ?? ''
+    for (const line of lines) parseLine(line, into)
+  }
+  const end = await cat.result
+  if (end.code !== 0) throw new Error(`cat ${file.path}: exit ${end.code ?? end.signal}`)
+  parseLine(rest, into)
+}
+
+// The session's transcript and its subagents', or undefined when the
+// session's own cannot be found.
+async function transcriptFiles($: EngineInterface, sid: string): Promise<TranscriptFile[] | undefined> {
   const config = (await $.env.get('CLAUDE_CONFIG_DIR')) ?? `${await $.env.get('HOME')}/.claude`
   const projects = `${config}/projects`
   const slug = (await $.session.root()).replace(/[^a-zA-Z0-9]/g, '-')
@@ -141,11 +171,12 @@ async function transcriptFiles($: EngineInterface, sid: string): Promise<string[
     if (found.length === 0) return undefined
     dir = `${projects}/${found[0]}`
   }
-  const files = [`${dir}/${sid}.jsonl`]
+  const main = `${dir}/${sid}.jsonl`
+  const files = [{ path: main, size: (await $.fs.stat(main)).size }]
   const subagents = `${dir}/${sid}/subagents`
   if (await $.fs.exists(subagents)) {
     for (const entry of await $.fs.list(subagents)) {
-      if (entry.kind === 'file' && entry.name.endsWith('.jsonl')) files.push(`${subagents}/${entry.name}`)
+      if (entry.kind === 'file' && entry.name.endsWith('.jsonl')) files.push({ path: `${subagents}/${entry.name}`, size: entry.size })
     }
   }
   return files
@@ -157,17 +188,15 @@ async function backfill($: EngineInterface, settings: Settings) {
   const sid = await $.session.id()
   const sessionModel = await $.session.model()
   const now = await $.clock.now()
-
-  for (const key of await $.store.keys()) {
-    if (key.startsWith('day:') && key.endsWith(`:${sid}`)) await $.store.delete(key)
-  }
+  const today = dateOf(now)
+  const ownKeys = (await $.store.keys()).filter(key => key.startsWith('day:') && key.endsWith(`:${sid}`))
 
   const turns = new Map<string, Turn>()
   let isRead = false
   try {
     const files = await transcriptFiles($, sid)
     if (files) {
-      for (const file of files) parseTranscript(await $.fs.read(file), turns)
+      for (const file of files) await readTranscript($, file, turns)
       isRead = true
     }
   } catch {
@@ -177,6 +206,8 @@ async function backfill($: EngineInterface, settings: Settings) {
   const byModel: Record<string, Tally> = {}
   const days: Record<string, Tally> = {}
   if (isRead) {
+    // The transcript holds every request: each day of this session is rebuilt from it.
+    for (const key of ownKeys) await $.store.delete(key)
     for (const turn of turns.values()) {
       const cost = costOf(turn.model, turn.usage, scopeFor(turn.model, sessionModel), settings.premiumPct)
       const date = dateOf(Number.isFinite(turn.at) ? turn.at : now)
@@ -184,13 +215,21 @@ async function backfill($: EngineInterface, settings: Settings) {
       days[date] = add(days[date] ?? ZERO, turn.usage, cost)
     }
   } else {
-    // Claude Code prices at the global rates: a regional session adds the premium.
-    const engine = (await $.session.usage()).cost?.usd ?? 0
+    // Claude Code's total, priced at the global rates: a regional session adds
+    // the premium. It counts from the session's first launch, a resume's
+    // earlier runs too, as one sum with no dates. All of it is today's only
+    // when the session began today; otherwise the days stay as the meter
+    // counted them live, and the session total alone carries the rest.
+    const usage = await $.session.usage()
+    const engine = usage.cost?.usd ?? 0
     if (engine > 0) {
       const premium = scopeFor(sessionModel, sessionModel) === 'regional' ? settings.premiumPct : 0
       const tally = { ...ZERO, usd: engine * (1 + premium / 100) }
       byModel[EARLIER] = tally
-      days[dateOf(now)] = tally
+      if (dateOf(usage.startedAt) === today) {
+        for (const key of ownKeys) await $.store.delete(key)
+        days[today] = tally
+      }
     }
   }
 
