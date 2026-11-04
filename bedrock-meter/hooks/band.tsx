@@ -14,19 +14,21 @@ export const hitRate = (t: Tally) => {
   return prompt === 0 ? 0 : Math.round((t.cacheRead / prompt) * 100)
 }
 
-export type Figures = { total: Tally; today: Tally; budgetUsd: number; context: Context | null }
+export type Figures = { total: Tally; today: Tally; month: Tally; budgetUsd: number; context: Context | null }
 
 type Segment = { text: string; color?: string; dim?: boolean; bold?: boolean }
 
-type Layout = { isLong: boolean; cells: number; hasTokens: boolean; hasCache: boolean; hasToday: boolean }
+type Layout = { isLong: boolean; cells: number; hasTokens: boolean; hasCache: boolean; hasToday: boolean; hasMonth: boolean }
 
-// Widest first: the band sheds token counts, then the cache figure and the
-// labels, then the bar and today's total, so it keeps to one line.
+// Widest first: the band sheds token counts, then the month's total, then
+// the cache figure and the labels, then the bar and today's total, so it
+// keeps to one line.
 const LAYOUTS: Layout[] = [
-  { isLong: true, cells: 8, hasTokens: true, hasCache: true, hasToday: true },
-  { isLong: true, cells: 8, hasTokens: false, hasCache: true, hasToday: true },
-  { isLong: false, cells: 5, hasTokens: false, hasCache: false, hasToday: true },
-  { isLong: false, cells: 0, hasTokens: false, hasCache: false, hasToday: false },
+  { isLong: true, cells: 8, hasTokens: true, hasCache: true, hasToday: true, hasMonth: true },
+  { isLong: true, cells: 8, hasTokens: false, hasCache: true, hasToday: true, hasMonth: true },
+  { isLong: true, cells: 8, hasTokens: false, hasCache: true, hasToday: true, hasMonth: false },
+  { isLong: false, cells: 5, hasTokens: false, hasCache: false, hasToday: true, hasMonth: false },
+  { isLong: false, cells: 0, hasTokens: false, hasCache: false, hasToday: false, hasMonth: false },
 ]
 
 const SPLIT = ' · '
@@ -82,6 +84,7 @@ function parts(f: Figures, l: Layout): Segment[][] {
     if (l.hasTokens) out.push([{ text: `in ${tokens(total.input + total.cacheWrite)} out ${tokens(total.output)}`, dim: true }])
     if (l.hasCache) out.push([{ text: 'cache ', dim: true }, { text: `${tokens(total.cacheRead)} ${hitRate(total)}%` }])
     if (l.hasToday) out.push([{ text: 'today ', dim: true }, { text: usd(f.today.usd) }])
+    if (l.hasMonth) out.push([{ text: 'month ', dim: true }, { text: usd(f.month.usd) }])
   }
   return out
 }

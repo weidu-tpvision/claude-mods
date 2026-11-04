@@ -17,6 +17,6 @@ export type Context = { tokens?: number; window: number; percent?: number }
 
 declare module 'claude-code' {
   interface PluginState {
-    'bedrock-meter': { meter: Meter; context: Context | null; today: Tally }
+    'bedrock-meter': { meter: Meter; context: Context | null; today: Tally; month: Tally }
   }
 }

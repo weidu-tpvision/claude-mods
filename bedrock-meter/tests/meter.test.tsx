@@ -278,13 +278,33 @@ test('the band shows cost, context and today, and sheds parts when narrow', asyn
 
   const two = `$${(2 * opusRegional()).toFixed(2)}`
   const wide = await bandLine($, 200)
-  expect(wide).toBe(`Bedrock ${two} · ctx ${bar(42, 8)} 42% 84.0k/200.0k · in 4.0M out 2.0M · cache 2.0M 33% · today ${two}`)
+  expect(wide).toBe(`Bedrock ${two} · ctx ${bar(42, 8)} 42% 84.0k/200.0k · in 4.0M out 2.0M · cache 2.0M 33% · today ${two} · month ${two}`)
 
   const narrow = await bandLine($, 40)
   expect(narrow).toContain(two)
   expect(narrow).toMatch(/42%/)
   expect(narrow).not.toMatch(/cache|in 4/)
   expect(narrow.length).toBeLessThanOrEqual(38)
+})
+
+test('the month adds up this calendar month\'s days, every session\'s', async ($, on) => {
+  const store = {
+    'day:2026-10-01:a': { ...ONE, usd: 2 },
+    'day:2026-10-21:b': ONE,
+    'day:2026-09-30:c': { ...ONE, usd: 40 }, // last month
+  }
+  engine(on, undefined, store)
+  await $.session.start({ cwd: '/w', surface: 'terminal', isInteractive: true })
+  // This session's $5.50 estimate is today's: today $6.50, the month $8.50.
+  expect(await paneLine($, /^Today/)).toMatch(/\$6\.50/)
+  expect(await paneLine($, /^Month/)).toMatch(/\$8\.50/)
+  expect(await bandLine($, 200)).toMatch(/today \$6\.50 · month \$8\.50$/)
+  // Narrower, the month goes before the cache figure.
+  const wide = await bandLine($, 200)
+  const noTokens = wide.replace(/ · in \S+ out \S+/, '')
+  const noMonth = noTokens.replace(/ · month \S+/, '')
+  expect(await bandLine($, noTokens.length + 2)).toBe(noTokens)
+  expect(await bandLine($, noTokens.length + 1)).toBe(noMonth)
 })
 
 // A budget the session's two requests come to 80% of.

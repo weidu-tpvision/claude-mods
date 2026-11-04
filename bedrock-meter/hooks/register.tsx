@@ -17,8 +17,10 @@ const ZERO: Tally = { requests: 0, input: 0, output: 0, cacheRead: 0, cacheWrite
 const meter = atom({ plugin: 'bedrock-meter', key: 'meter' } as const, EMPTY)
 const context = atom({ plugin: 'bedrock-meter', key: 'context' } as const, null as Context | null)
 const todayTally = atom({ plugin: 'bedrock-meter', key: 'today' } as const, ZERO)
+const monthTally = atom({ plugin: 'bedrock-meter', key: 'month' } as const, ZERO)
 
-// Daily totals older than this are dropped at each session start.
+// Daily totals older than this are dropped at each session start; it covers
+// the longest month, so the month's total always has its first day.
 const KEEP_DAYS = 31
 const DAY_MS = 86_400_000
 const TICK_MS = 60_000
@@ -59,12 +61,16 @@ export const dateOf = (ms: number) => {
 }
 
 // Daily totals are kept per session (`day:<date>:<session>`), so rebuilding
-// one session's figures never counts another's twice.
+// one session's figures never counts another's twice. Today and this month
+// (local calendar) are summed from them.
 async function refreshToday($: EngineInterface) {
-  const prefix = `day:${dateOf(await $.clock.now())}:`
-  const keys = (await $.store.keys()).filter(key => key.startsWith(prefix))
-  const day = sum(await Promise.all(keys.map(async key => ((await $.store.get(key)) as Tally | undefined) ?? ZERO)))
-  await update($, todayTally, () => day)
+  const date = dateOf(await $.clock.now())
+  const keys = (await $.store.keys()).filter(key => key.startsWith(`day:${date.slice(0, 7)}-`))
+  const tallies = await Promise.all(
+    keys.map(async key => [key, ((await $.store.get(key)) as Tally | undefined) ?? ZERO] as const),
+  )
+  await update($, todayTally, () => sum(tallies.filter(([key]) => key.startsWith(`day:${date}:`)).map(([, t]) => t)))
+  await update($, monthTally, () => sum(tallies.map(([, t]) => t)))
 }
 
 // Drops the days past KEEP_DAYS, and the per-day keys of the first version.
@@ -331,6 +337,7 @@ export const register: Register = (on, options) => {
     const figures = {
       total: sum(Object.values(m.byModel)),
       today: await read($, todayTally),
+      month: await read($, monthTally),
       budgetUsd: settings.budgetUsd,
       context: await read($, context),
     }
@@ -345,6 +352,7 @@ export const register: Register = (on, options) => {
     const m = await read($, meter)
     const total = sum(Object.values(m.byModel))
     const day = await read($, todayTally)
+    const month = await read($, monthTally)
     const ctx = await read($, context)
     const engine = (await $.session.usage()).cost?.usd
     const rows = Object.entries(m.byModel).sort(([, a], [, b]) => b.usd - a.usd)
@@ -375,6 +383,7 @@ export const register: Register = (on, options) => {
               Session {usd(total.usd)} · cache hit {hitRate(total)}%
             </Text>
             <Text>Today {usd(day.usd)} · out {tokens(day.output)}</Text>
+            <Text>Month {usd(month.usd)} · out {tokens(month.output)}</Text>
             {ctx?.percent !== undefined && (
               <Text>
                 Context {Math.round(ctx.percent)}%
