@@ -2,6 +2,14 @@
 
 A token and cost meter for Claude Code on Amazon Bedrock (pay per token, no subscription).
 
+The band above the prompt, on a wide terminal, about 80 columns, and a narrow one (example figures):
+
+```
+Bedrock $4.37 · ctx █▄▁▁▁▁▁▁ 18% 182.4k/1.0M · in 412.6k out 58.3k · cache 6.1M 94% · today $11.82 · month $163
+Bedrock $4.37 · ctx █▄▁▁▁▁▁▁ 18% · cache 6.1M 94% · today $11.82 · month $163
+$4.37 · ctx ▇▁▁▁▁ 18% · today $11.82 · month $163
+```
+
 - **Band above the prompt:** session cost, a context bar (green, yellow from 75%, red from 90%), input/output tokens, cache reads and hit rate, today's total and this month's. On a narrow terminal it drops the token counts first, then the context's token figures (its percent stays), then the cache figure, then the labels and the month's total, and last the bar and today's total, so it stays on one line. With a budget set, the cost turns yellow at 70% of it and red once passed.
 - **Next to other band mods:** it stacks with hamzafer's [claude-code-mods](https://github.com/hamzafer/claude-code-mods) bands (context-bar, token-weather, ...) through their shared `hooks/bands.ts` (MIT), in the order their checklist saves.
 - **`/bedrock-cost`:** opens a pane with a per-model breakdown and the session, daily and monthly totals, next to Claude Code's own `/cost` estimate.
