@@ -5,7 +5,7 @@
 // model's long-context threshold. Cache writes are the 5-minute TTL's.
 import type { Row } from './pricing'
 
-export const PUBLISHED = '2026-10-12T08:40:08Z'
+export const PUBLISHED = '2026-11-23T09:58:41Z'
 
 // Longest family first, so `opus-5-5` wins over `opus-5`.
 export const ROWS: Row[] = [
@@ -21,6 +21,11 @@ export const ROWS: Row[] = [
     family: 'mythos-5-1',
     global: { input: 10, output: 50, cacheRead: 0.25, cacheWrite: 12.5 },
     regional: { input: 11, output: 55, cacheRead: 0.275, cacheWrite: 13.75 },
+  },
+  {
+    family: 'mythos-5-2',
+    global: { input: 8, output: 40, cacheRead: 0.2, cacheWrite: 10 },
+    regional: { input: 8.8, output: 44, cacheRead: 0.22, cacheWrite: 11 },
   },
   {
     family: 'sonnet-4-5',
@@ -45,6 +50,11 @@ export const ROWS: Row[] = [
     family: 'fable-5-1',
     global: { input: 10, output: 50, cacheRead: 0.25, cacheWrite: 12.5 },
     regional: { input: 11, output: 55, cacheRead: 0.275, cacheWrite: 13.75 },
+  },
+  {
+    family: 'fable-5-2',
+    global: { input: 8, output: 40, cacheRead: 0.2, cacheWrite: 10 },
+    regional: { input: 8.8, output: 44, cacheRead: 0.22, cacheWrite: 11 },
   },
   {
     family: 'haiku-4-5',
